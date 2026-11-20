@@ -1,0 +1,10 @@
+{
+  "dpLinkTrainingFaultInjection": {
+    "patch": "msm-dp-lab-lt-fault-injection",
+    "description": "msm DP/eDP link-training fault injection: the module parameter msm.dp_lt_inject_eq_fail=N makes the next N link-training attempts fail their channel-equalisation phase on purpose (real failures count too), and the per-attempt warning gets a '(fault injection: ...)' suffix. Use it to exercise link-training retry and fallback code, the kernel's error reporting to user space, or a recovery service such as edpRetrain, without waiting for a rare real failure. No effect unless the parameter is set."
+  },
+  "qmpComboDpPowerOnDiag": {
+    "patch": "phy-qcom-qmp-combo-dp-poweron-diag",
+    "description": "QMP USB/DP combo PHY DP power-on diagnostics: logs 'LAB-DIAG:' lines with the PHY status registers (at both the polled offsets and the alternative COM register map) and the PHY/Type-C state when DP power-on times out, plus one line per DP power-on. Logging only, no behaviour change. Use it when external DisplayPort over USB-C fails with a PHY power-on timeout (-110), e.g. to check register offsets on a new SoC or PHY revision."
+  }
+}

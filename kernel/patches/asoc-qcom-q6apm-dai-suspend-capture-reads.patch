@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 16:22:46 -0800
+Subject: [PATCH] NOT-FOR-UPSTREAM: ASoC: qcom: q6apm-dai: don't requeue capture buffers of a
+ suspending graph
+
+The DATA_READ_DONE handler queues the next read whenever the stream is
+RUNNING, and the SUSPEND trigger leaves the state RUNNING while it stops
+the graph. A graph that is being stopped hands every read buffer
+straight back, so the handler and the DSP ping-pong the capture buffers
+on the GPR receive work, and the reply to the graph stop does not get
+through:
+
+  qcom-apm gprsvc:service:2:1: CMD timeout for [1001003] opcode
+
+On the ASUS Zenbook A16, with the internal microphones open in PipeWire
+across s2idle, ftrace counted about 43,000 graph callbacks a second for
+the whole 5.4 s from the capture front end's GRAPH_STOP until the
+timeout.
+
+Mark the stream suspended before the stop and don't queue reads while it
+is, and queue the period buffers again after RESUME has restarted the
+graph, as prepare does.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/qcom/qdsp6/q6apm-dai.c | 28 ++++++++++++++++++++++++----
+ 1 file changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6apm-dai.c b/sound/soc/qcom/qdsp6/q6apm-dai.c
+index 6c58d71fae5c..9f3f32326ac2 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6apm-dai.c
+@@ -271,7 +271,13 @@ static void event_handler(uint32_t opcode, uint32_t token, void *payload, void *
+ 		break;
+ 	case APM_CLIENT_EVENT_DATA_READ_DONE:
+ 		queue_work(system_highpri_wq, &prtd->period_work);
+-		if (prtd->state == Q6APM_STREAM_RUNNING)
++		/*
++		 * A graph being stopped for system suspend hands every read
++		 * buffer straight back; queueing it again would loop until the
++		 * stop times out. RESUME queues the buffers again.
++		 */
++		if (prtd->state == Q6APM_STREAM_RUNNING &&
++		    !READ_ONCE(prtd->graph_suspended))
+ 			q6apm_read(prtd->graph);
+ 
+ 		break;
+@@ -473,8 +479,16 @@ static int q6apm_dai_trigger(struct snd_soc_component *component,
+ 	case SNDRV_PCM_TRIGGER_RESUME:
+ 		/* Restart the graph stopped for system suspend. */
+ 		if (prtd->graph_suspended) {
+-			prtd->graph_suspended = false;
+ 			ret = q6apm_graph_start(prtd->graph);
++			WRITE_ONCE(prtd->graph_suspended, false);
++			/* The stop returned every read buffer: queue them again. */
++			if (!ret && substream->stream == SNDRV_PCM_STREAM_CAPTURE &&
++			    !q6apm_is_graph_in_push_pull_mode(prtd->graph)) {
++				int i;
++
++				for (i = 0; i < runtime->periods; i++)
++					q6apm_read(prtd->graph);
++			}
+ 		}
+ 		break;
+ 	case SNDRV_PCM_TRIGGER_START:
+@@ -492,8 +506,14 @@ static int q6apm_dai_trigger(struct snd_soc_component *component,
+ 		 * DDR awake) through system suspend; stop it until RESUME.
+ 		 */
+ 		if (prtd->state == Q6APM_STREAM_RUNNING && !prtd->graph_suspended) {
+-			if (!q6apm_graph_stop(prtd->graph))
+-				prtd->graph_suspended = true;
++			/*
++			 * Set before the stop, so that the event handler stops
++			 * queueing capture buffers. q6apm_graph_stop() drops
++			 * the start count even when the DSP does not answer, so
++			 * RESUME starts the graph again either way.
++			 */
++			WRITE_ONCE(prtd->graph_suspended, true);
++			q6apm_graph_stop(prtd->graph);
+ 		}
+ 		break;
+ 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:

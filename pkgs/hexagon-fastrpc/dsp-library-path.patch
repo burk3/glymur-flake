@@ -1,0 +1,44 @@
+--- a/src/fastrpc_apps_user.c
++++ b/src/fastrpc_apps_user.c
+@@ -3338,8 +3338,9 @@ static int try_open_shell_file(int domain, const char *shell_name,
+    */
+   VERIFYC(IS_VALID_DOMAIN_ID(domain) && shell_name && fh, AEE_EBADPARM);
+ 
+-  /* 1. Search the configured DSP library locations. */
+-  nErr = fopen_from_dirlist(DSP_LIBS_LOCATION, ";", "r", shell_name, fh);
++  /* Shells must use the same environment override as DSP shared objects.
++   * The helper also appends DSP_LIBS_LOCATION defaults. */
++  nErr = apps_std_fopen_with_env(ADSP_LIBRARY_PATH, ";", shell_name, "r", fh);
+   if (!nErr)
+     goto bail;
+ 
+--- a/src/fastrpc_procbuf.c
++++ b/src/fastrpc_procbuf.c
+@@ -5,6 +5,7 @@
+ #include <dirent.h>
+ #include <string.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ 
+ #include "AEEstd.h"
+ #include "AEEStdErr.h"
+@@ -68,14 +69,15 @@ bail:
+ 
+ static int get_non_preload_lib_names (char** lib_names, size_t* buffer_size, int domain)
+ {
+-	int nErr = AEE_SUCCESS, env_list_len = 0,  concat_len = 0;
++	int nErr = AEE_SUCCESS, concat_len = 0;
+ 	char* data_paths = NULL;
+ 	char *saveptr       = NULL;
+-	size_t dsp_search_path_len = strlen(DSP_LIBRARY_PATH) + 1;
++	const char *dsp_search_path = getenv(DSP_LIBRARY_PATH);
+ 
+ 	VERIFYC(*lib_names != NULL, AEE_ENOMEMORY);
+-	VERIFYC(NULL != (data_paths = calloc(1, sizeof(char) * dsp_search_path_len)), AEE_ENOMEMORY);
+-	VERIFYC(AEE_SUCCESS == apps_std_getenv(DSP_LIBRARY_PATH, data_paths, dsp_search_path_len, &env_list_len), AEE_EGETENV);
++	VERIFYC(dsp_search_path != NULL, AEE_EGETENV);
++	/* Size the copy from the value, not the environment variable name. */
++	VERIFYC(NULL != (data_paths = strdup(dsp_search_path)), AEE_ENOMEMORY);
+ 
+ 	char* path = strtok_r(data_paths, ";", &saveptr);
+ 	while (path != NULL)

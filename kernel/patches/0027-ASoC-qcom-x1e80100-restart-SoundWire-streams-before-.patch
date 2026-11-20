@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 18:56:23 -0800
+Subject: [PATCH 27/27] NOT-FOR-UPSTREAM: ASoC: qcom: x1e80100: restart SoundWire streams before
+ the codecs resume
+
+The card resume (soc_resume_deferred()) powers the DAPM paths of
+suspended streams up again before user space resumes the PCMs, so with
+the SoundWire stream deprepared across suspend, the codec widgets come
+up while their data ports are stopped. An SDCA power domain does not
+reach PS0 without its data port running: on the ASUS Zenbook A16 the
+WCD9378 headphone PDE 47 times out on the first resume of a held
+headphone stream,
+
+  snd_soc_sdca_class_function snd_soc_sdca.SimpleJack.0: PDE 47: pde transition 3 -> 0 failed: -110
+
+Add qcom_snd_sdw_resume(), which prepares and enables a stream that
+qcom_snd_sdw_trigger() deprepared for suspend, and call it for every
+back end from the card's resume_pre callback, which runs after the
+devices (and the SoundWire bus checks) have resumed and before DAPM.
+The RESUME trigger then finds the stream enabled. The WSA884x speakers
+stay muted until their RESUME trigger, as before, so their ports are
+still running before the amplifiers unmute.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/qcom/sdw.c      | 33 +++++++++++++++++++++++++++++++++
+ sound/soc/qcom/sdw.h      |  2 ++
+ sound/soc/qcom/x1e80100.c | 36 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 71 insertions(+)
+
+diff --git a/sound/soc/qcom/sdw.c b/sound/soc/qcom/sdw.c
+index e7c325f92b54..5ed33ee759f1 100644
+--- a/sound/soc/qcom/sdw.c
++++ b/sound/soc/qcom/sdw.c
+@@ -201,6 +201,39 @@ int qcom_snd_sdw_trigger(struct snd_pcm_substream *substream, int cmd,
+ }
+ EXPORT_SYMBOL_GPL(qcom_snd_sdw_trigger);
+ 
++/**
++ * qcom_snd_sdw_resume() - Helper to restart a SoundWire stream on card resume
++ * @substream: The back-end PCM substream
++ * @stream_prepared: The stream_prepared flag of this link, as passed to
++ *		     qcom_snd_sdw_prepare()
++ *
++ * Restart a stream that qcom_snd_sdw_trigger() deprepared for system
++ * suspend. Machine drivers call this from their card resume_pre callback:
++ * the card resume powers the DAPM paths of suspended streams up again
++ * before the PCMs are resumed, and an SDCA codec's power domain only
++ * reaches PS0 while its data port is running. The RESUME trigger then
++ * finds the stream enabled.
++ *
++ * Return: 0 or errno
++ */
++int qcom_snd_sdw_resume(struct snd_pcm_substream *substream,
++			bool *stream_prepared)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct sdw_stream_runtime *sruntime;
++
++	if (!qcom_snd_is_sdw_dai(cpu_dai->id) || !*stream_prepared)
++		return 0;
++
++	sruntime = qcom_snd_sdw_get_stream(substream);
++	if (!sruntime || sruntime->state != SDW_STREAM_DEPREPARED)
++		return 0;
++
++	return qcom_snd_sdw_restart(sruntime);
++}
++EXPORT_SYMBOL_GPL(qcom_snd_sdw_resume);
++
+ int qcom_snd_sdw_prepare(struct snd_pcm_substream *substream,
+ 			 bool *stream_prepared)
+ {
+diff --git a/sound/soc/qcom/sdw.h b/sound/soc/qcom/sdw.h
+index 8fcadf57f964..7c04f269fad8 100644
+--- a/sound/soc/qcom/sdw.h
++++ b/sound/soc/qcom/sdw.h
+@@ -15,4 +15,6 @@ int qcom_snd_sdw_hw_free(struct snd_pcm_substream *substream,
+ 			 bool *stream_prepared);
+ int qcom_snd_sdw_trigger(struct snd_pcm_substream *substream, int cmd,
+ 			 bool *stream_prepared);
++int qcom_snd_sdw_resume(struct snd_pcm_substream *substream,
++			bool *stream_prepared);
+ #endif
+diff --git a/sound/soc/qcom/x1e80100.c b/sound/soc/qcom/x1e80100.c
+index a6c3cab81661..d4ac17eaae64 100644
+--- a/sound/soc/qcom/x1e80100.c
++++ b/sound/soc/qcom/x1e80100.c
+@@ -167,6 +167,41 @@ static int x1e80100_snd_trigger(struct snd_pcm_substream *substream, int cmd)
+ 				    &data->stream_prepared[cpu_dai->id]);
+ }
+ 
++/*
++ * The card resume powers the codec paths of suspended streams up before the
++ * PCMs are resumed; restart their SoundWire streams first (see
++ * qcom_snd_sdw_resume()).
++ */
++static int x1e80100_resume_pre(struct snd_soc_card *card)
++{
++	struct x1e80100_snd_data *data = snd_soc_card_get_drvdata(card);
++	struct snd_soc_pcm_runtime *rtd;
++	int stream, ret;
++
++	for_each_card_rtds(card, rtd) {
++		struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++
++		if (!rtd->dai_link->no_pcm || !rtd->pcm)
++			continue;
++
++		for_each_pcm_streams(stream) {
++			struct snd_pcm_substream *substream =
++				snd_soc_dpcm_get_substream(rtd, stream);
++
++			if (!substream || !substream->runtime)
++				continue;
++
++			ret = qcom_snd_sdw_resume(substream,
++						  &data->stream_prepared[cpu_dai->id]);
++			if (ret)
++				dev_warn(card->dev, "%s: SoundWire stream restart failed: %d\n",
++					 cpu_dai->name, ret);
++		}
++	}
++
++	return 0;
++}
++
+ static const struct snd_soc_ops x1e80100_be_ops = {
+ 	.startup = qcom_snd_sdw_startup,
+ 	.shutdown = qcom_snd_sdw_shutdown,
+@@ -223,6 +258,7 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
+ 
+ 	card->driver_name = of_device_get_match_data(dev);
+ 	x1e80100_add_be_ops(card);
++	card->resume_pre = x1e80100_resume_pre;
+ 
+ 	return devm_snd_soc_register_card(dev, card);
+ }

@@ -1,0 +1,31 @@
+
+7-Zip (z) 26.02 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-06-25
+ 64-bit locale=en_US.UTF-8 Threads:32 OPEN_MAX:524288, ASM
+
+ mt1
+Compiler:  ver:15.2.0 GCC 15.2.0 : SSE2
+Linux : 7.2.9 : #1-NixOS SMP PREEMPT_DYNAMIC Sat Oct  3 10:43:16 UTC 2026 : x86_64
+PageSize:4KB HPS:2MB THPS:2MB THP:madvise hwcap:2 hwcap2:2
+AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+(B70F00)  (LP)
+
+1T CPU Freq (MHz):  3541  3542  3443  3545  3543  3546  3540
+
+RAM size:   64079 MB (LP),  # CPU hardware threads:  32
+RAM usage:    437 MB (LP),  # Benchmark threads:      1
+
+                       Compressing  |                  Decompressing
+Dict     Speed Usage    R/U Rating  |      Speed Usage    R/U Rating
+         KiB/s     %   MIPS   MIPS  |      KiB/s     %   MIPS   MIPS
+
+22:      11196    99  11037  10892  |     129901   100  11143  11091
+23:       7802   100   7936   7950  |     129511    99  11284  11210
+24:       5644   100   6098   6069  |     125776   100  11030  11042
+25:       4527   100   5185   5169  |     119903   100  10665  10672
+22:      10355   100  10117  10073  |     129851    99  11143  11087
+23:       7827    99   8088   7975  |     129170   100  11210  11181
+24:       5661   100   6098   6087  |     128158   100  11265  11251
+25:       4811   100   5505   5493  |     124733   100  11154  11102
+----------------------------------  | ------------------------------
+Avr:      7228    99   7508   7463  |     127125   100  11112  11080
+Tot:             100   9310   9272

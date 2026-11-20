@@ -1,0 +1,16 @@
+diff --git a/src/fastrpc_apps_user.c b/src/fastrpc_apps_user.c
+index 85895c8..7322487 100644
+--- a/src/fastrpc_apps_user.c
++++ b/src/fastrpc_apps_user.c
+@@ -3208,7 +3208,10 @@ int open_device_node(int domain_id) {
+   if (IS_VALID_DOMAIN_ID(domain)) {
+     get_domain_device_names(domain, &secure_dev, &non_secure_dev);
+     dev = open(secure_dev, O_NONBLOCK);
+-    if ((dev < 0) && ((errno == ENOENT) || (errno == EACCES))) {
++    /* A devices cgroup can deny the secure node with EPERM even when Unix
++     * permissions permit access. Still try the unprivileged interface. */
++    if ((dev < 0) &&
++        ((errno == ENOENT) || (errno == EACCES) || (errno == EPERM))) {
+       FARF(RUNTIME_RPC_HIGH,
+            "Device node %s open failed for domain %d (errno %s),"
+            "falling back to node %s \n",

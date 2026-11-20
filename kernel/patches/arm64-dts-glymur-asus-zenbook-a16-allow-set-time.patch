@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Sat, 24 Oct 2026 13:31:37 -0700
+Subject: [PATCH] NOT-FOR-UPSTREAM: arm64: dts: qcom: glymur-asus-zenbook-a16: Allow setting the
+ RTC time
+
+rtc-qcom-glink reads and sets the firmware's RTC through the
+firmware's GIO time interface and writes UTC with a zero time zone
+offset, which reads back as UTC. Allow it to set the time, so that the
+NTP sync keeps the RTC correct.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts b/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
+index 939e1a9..dbbfd6f 100644
+--- a/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
++++ b/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
+@@ -150,6 +150,7 @@
+ 			     "qcom,pmic-glink";
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
++		allow-set-time;
+ 
+ 		/* Left side display-adjacent port */
+ 		connector@0 {
+-- 
+2.54.0
+

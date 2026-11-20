@@ -1,0 +1,16 @@
+version = 1
+
+# Kernel patches are derived works of Linux: GPL-2.0-only, copyright of the
+# authors named in each patch (From and Signed-off-by lines).
+[[annotations]]
+path = ["kernel/patches/**", "dts/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "The authors named in each file"
+SPDX-License-Identifier = "GPL-2.0-only"
+
+# Everything else (Nix code, scripts, tools): MIT.
+[[annotations]]
+path = ["**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "The glymur-flake contributors"
+SPDX-License-Identifier = "MIT"

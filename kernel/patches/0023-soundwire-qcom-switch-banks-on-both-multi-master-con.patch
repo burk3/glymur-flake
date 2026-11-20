@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 18:56:22 -0800
+Subject: [PATCH 23/27] NOT-FOR-UPSTREAM: soundwire: qcom: switch banks on both multi-master
+ controllers
+
+On a multi-master link (Glymur: swr2 primary, swr1 dependent providing
+two extra lanes) the SCP_FrameCtrl broadcast that ends a bank switch is
+fanned out as unicast writes to each peripheral, on the primary only,
+because the primary's broadcast never reported SPECIAL_CMD_ID_FINISHED.
+The peripherals switch banks that way, but neither controller does:
+MCP_STATUS reads bank 0 on both swr1 and swr2 at all times, while the
+bus bookkeeping alternates between banks. The DPn registers the core
+writes for "the next bank" are then the dependent's live registers, so
+a port enable on swr1 takes effect at the moment of the register write,
+not at the bank switch, and the port starts at an arbitrary point
+relative to the codec's.
+
+On the ASUS Zenbook A16 the WCD9378 headphone port (codec DP6) is fed by
+swr1 DP1. Its left/right orientation was random per stream start: 60 of
+120 starts came out swapped (440 Hz on the left channel captured on the
+right, checked on a line-in loopback), and clearing and restoring swr1
+DP1's channel enables mid-stream re-drew the orientation, while doing the
+same to the codec's DP6 did not.
+
+The broadcast has to go out through both controllers' command FIFOs:
+queued on the dependent first, the primary's broadcast then completes
+and both controllers switch banks together with the peripherals. Do
+that for SCP_FrameCtrl writes on a primary with a dependent, instead of
+the unicast fan-out, and warn when the two controllers are found in
+different banks before a switch.
+
+The dependent does not need to be waited for: its command FIFO reads
+empty right after the write, before the primary's broadcast is queued.
+
+Tested on the A16: every bank switch finished, both controllers'
+MCP_STATUS bank bits toggled with each switch, and the headphone
+orientation was correct in 100 of 100 starts after boot (on each of
+two boots) and 10 of 10 on each of three more. Across system sleep the
+dependent needs the following patch as well.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 81 ++++++++++++++++++++++++++++------------
+ 1 file changed, 57 insertions(+), 24 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 0e0ddfa99130..c6823c77fb0c 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -1470,37 +1470,70 @@ static int qcom_swrm_read_prop(struct sdw_bus *bus)
+ 	return 0;
+ }
+ 
++/*
++ * Switch banks on a multi-master link. Each controller only changes its
++ * own register bank (MCP_STATUS) when the SCP_FrameCtrl broadcast goes
++ * out through its own command FIFO, and the primary's broadcast has not
++ * been seen to complete (SPECIAL_CMD_ID_FINISHED) without the dependent
++ * sending it too. Queue the broadcast on the dependent first (its FIFO
++ * empties straight away), then send it on the primary and wait for it as
++ * usual. A dependent that stays in the old bank would run its ports from
++ * the registers written for the next bank as soon as they are written,
++ * out of step with the peripherals' bank switch.
++ */
++static enum sdw_command_response
++qcom_swrm_mm_bank_switch(struct qcom_swrm_ctrl *ctrl, struct sdw_msg *msg)
++{
++	struct qcom_swrm_ctrl *peer = ctrl->peer_ctrl;
++	u8 cmd_id = SWR_BROADCAST_CMD_ID;
++	u32 val, sts, peer_sts, fifo;
++	int ret;
++
++	ctrl->reg_read(ctrl, SWRM_MCP_STATUS, &sts);
++	peer->reg_read(peer, SWRM_MCP_STATUS, &peer_sts);
++	if ((sts ^ peer_sts) & SWRM_MCP_STATUS_BANK_NUM_MASK)
++		dev_warn_ratelimited(ctrl->dev,
++				     "multi-master banks out of step: primary %d, dependent %d\n",
++				     !!(sts & SWRM_MCP_STATUS_BANK_NUM_MASK),
++				     !!(peer_sts & SWRM_MCP_STATUS_BANK_NUM_MASK));
++
++	val = swrm_get_packed_reg_val(&cmd_id, msg->buf[0],
++				      SDW_BROADCAST_DEV_NUM, msg->addr);
++	if (swrm_wait_for_wr_fifo_avail(peer))
++		return SDW_CMD_FAIL_OTHER;
++	peer->reg_write(peer, peer->reg_layout[SWRM_REG_CMD_FIFO_WR_CMD], val);
++
++	peer->reg_read(peer, peer->reg_layout[SWRM_REG_CMD_FIFO_STATUS], &fifo);
++	dev_dbg(ctrl->dev, "bank switch %#x: dependent FIFO %lu queued\n",
++		msg->addr, FIELD_GET(SWRM_WR_CMD_FIFO_CNT_MASK, fifo));
++
++	ret = qcom_swrm_cmd_fifo_wr_cmd(ctrl, msg->buf[0],
++					SDW_BROADCAST_DEV_NUM, msg->addr);
++	if (ret != SDW_CMD_OK)
++		dev_err_ratelimited(ctrl->dev,
++				    "multi-master bank switch %#x not finished: %d\n",
++				    msg->addr, ret);
++
++	if (!swrm_wait_for_wr_fifo_done(peer))
++		dev_err_ratelimited(ctrl->dev,
++				    "dependent did not send bank switch %#x\n",
++				    msg->addr);
++
++	return ret;
++}
++
+ static enum sdw_command_response qcom_swrm_xfer_msg(struct sdw_bus *bus,
+ 						    struct sdw_msg *msg)
+ {
+ 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
+ 	int ret, i, len;
+ 
+-	/* HW never asserts SPECIAL_CMD_ID_FINISHED for broadcasts here;
+-	 * fan out to a unicast per enumerated slave. */
+-	if (ctrl->is_primary && msg->dev_num == SDW_BROADCAST_DEV_NUM &&
++	if (ctrl->is_primary && ctrl->peer_ctrl &&
++	    msg->dev_num == SDW_BROADCAST_DEV_NUM &&
++	    msg->flags == SDW_MSG_FLAG_WRITE && msg->len == 1 &&
+ 	    (msg->addr == SDW_SCP_FRAMECTRL_B0 ||
+-	     msg->addr == SDW_SCP_FRAMECTRL_B1)) {
+-		struct sdw_slave *slave;
+-		enum sdw_command_response resp;
+-		u16 orig_dev_num = msg->dev_num;
+-
+-		list_for_each_entry(slave, &bus->slaves, node) {
+-			if (slave->dev_num == SDW_ENUM_DEV_NUM ||
+-			    slave->dev_num >= SDW_BROADCAST_DEV_NUM)
+-				continue;
+-
+-			msg->dev_num = slave->dev_num;
+-			resp = qcom_swrm_xfer_msg(bus, msg);
+-			if (resp != SDW_CMD_OK) {
+-				msg->dev_num = orig_dev_num;
+-				return resp;
+-			}
+-		}
+-
+-		msg->dev_num = orig_dev_num;
+-		return SDW_CMD_OK;
+-	}
++	     msg->addr == SDW_SCP_FRAMECTRL_B1))
++		return qcom_swrm_mm_bank_switch(ctrl, msg);
+ 
+ 	if (msg->page) {
+ 		if (ctrl->page1_cache[msg->dev_num] != msg->addr_page1) {

@@ -1,0 +1,89 @@
+From 3feab54e05af22b328aa98be6b07ca91711c8a87 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 08:34:24 -0700
+Subject: [PATCH 09/11] NOT-FOR-UPSTREAM: soundwire: qcom: check the bus on system resume, before
+ streams restart
+
+When the controller has users at system suspend it is forced into clock
+stop, and pm_runtime_force_resume() brings it out again during system
+resume. On the ASUS Zenbook A16 (Glymur, two WSA8845 on each of two
+buses) that clock-stop exit faulted on 25-45 % of s2idle resumes: a bus
+clash, parity errors on both amplifiers, MAX_RETRY on alert reads,
+occasionally AUTO_ENUM_FAILED. The clash handler only queues the
+recovery worker, which then raced the rest of resume, and user space
+resumed the stream into the broken bus.
+
+User space is still frozen while the system resume callbacks run, and a
+stream stopped for system suspend (its SoundWire stream disabled by the
+machine driver) is only restarted by it. So the resume callback is the
+place to repair the bus: let the clock-stop exit settle (up to 100 ms
+for the peripherals to report attached), wait for the interrupt thread,
+and if a fault was reported or a peripheral is missing, reset and
+re-enumerate synchronously. A disabled stream is re-programmed by the
+next sdw_prepare_stream().
+
+Peripherals that never bound are not reprobed from here: probing is
+blocked until the system transition completes. Anything still pending
+is left to the worker.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 31 ++++++++++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index fe581ab0156d..ad9100d5dba8 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -147,6 +147,7 @@
+ #define SWR_OVERFLOW_RETRY_COUNT				30
+ #define SWRM_LINK_STATUS_RETRY_CNT				100
+ #define SWRM_IRQ_MAX_LOOPS					32
++#define SWRM_RESUME_SETTLE_MS					100
+ 
+ enum {
+ 	MASTER_ID_WSA = 1,
+@@ -2357,11 +2358,39 @@ static int __maybe_unused swrm_system_resume(struct device *dev)
+ 
+ 	ret = pm_runtime_force_resume(dev);
+ 
++	mutex_lock(&qcom_swrm_probe_recovery_lock);
+ 	mutex_lock(&ctrl->recovery_lock);
+ 	ctrl->system_suspended = false;
++
++	/*
++	 * If the controller came out of clock stop here (it had users at
++	 * suspend), check the bus before returning. Streams stopped for
++	 * system suspend are only restarted by user space, which is still
++	 * frozen, so this is the window in which a fault from the clock-stop
++	 * exit (a clash, parity errors, a peripheral that did not come back)
++	 * can be repaired before any port is enabled or amplifier unmuted.
++	 */
++	if (!ret && pm_runtime_active(dev) && READ_ONCE(ctrl->recovery_ready) &&
++	    !qcom_swrm_stream_running(ctrl)) {
++		wait_event_timeout(ctrl->slaves_wait,
++				   qcom_swrm_all_slaves_online(ctrl),
++				   msecs_to_jiffies(SWRM_RESUME_SETTLE_MS));
++		synchronize_irq(ctrl->irq);
++		if (!qcom_swrm_all_slaves_online(ctrl) &&
++		    !atomic_read(&ctrl->recovery_pending)) {
++			dev_warn(dev, "peripherals not attached after resume\n");
++			atomic_inc(&ctrl->recovery_pending);
++		}
++		if (atomic_read(&ctrl->recovery_pending)) {
++			dev_info(dev, "recovering the bus on system resume\n");
++			qcom_swrm_recover(ctrl, false);
++		}
++	}
++
+ 	mutex_unlock(&ctrl->recovery_lock);
++	mutex_unlock(&qcom_swrm_probe_recovery_lock);
+ 
+-	/* A fault reported while suspended or during resume. */
++	/* Whatever is still pending runs once streams allow it. */
+ 	if (atomic_read(&ctrl->recovery_pending))
+ 		schedule_work(&ctrl->recovery_work);
+ 

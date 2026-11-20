@@ -1,0 +1,168 @@
+From 71c6e049135428ef27f050ce46fbed1370330357 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 08:35:50 -0700
+Subject: [PATCH] NOT-FOR-UPSTREAM: soundwire: qcom: recover a bus that faults under a running
+ stream
+
+A clash or failed auto-enumeration while a stream is running (PREPARED
+or ENABLED on this bus) left the recovery pending until the stream
+stopped. Its peripherals stay UNATTACHED or in ALERT meanwhile, so the
+speakers on that bus are silent for as long as the stream runs, which
+with a sound server that keeps the device open is until the next
+reboot or sleep.
+
+Reset and re-enumerate the bus anyway, then restart each stream that was
+running on it: disable it, sdw_prepare_stream() it again from DISABLED,
+which re-applies the port setup on the controller and the re-enumerated
+peripherals, and enable it. The audio stops for the length of the
+recovery (a few to a few hundred milliseconds) instead of until the
+stream closes.
+
+At most three such recoveries are tried until the streams on the bus are
+freed; a bus that faults again on every restart falls back to the old
+behaviour. qcom_swrm_hw_free() now takes recovery_lock, so a stream
+cannot be removed from the bus while it is being restarted. The machine
+driver's own hw_free (disable and deprepare) still runs before the
+controller DAI's, unserialised: a recovery that coincides with closing
+the stream can leave the core logging a state error, as it would for two
+concurrent callers.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 90 ++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 87 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 660410074587..e8bc45fe720e 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -151,6 +151,8 @@
+ #define SWRM_LINK_STATUS_RETRY_CNT				100
+ #define SWRM_IRQ_MAX_LOOPS					32
+ #define SWRM_RESUME_SETTLE_MS					100
++#define SWRM_MAX_RUNNING_RECOVERIES				3
++#define SWRM_MAX_RECOVER_STREAMS				4
+ 
+ enum {
+ 	MASTER_ID_WSA = 1,
+@@ -217,6 +219,8 @@ struct qcom_swrm_ctrl {
+ 	bool recovery_ready;
+ 	/* Set across system sleep; recovery must not run (recovery_lock). */
+ 	bool system_suspended;
++	/* Consecutive recoveries under a running stream (recovery_lock). */
++	unsigned int running_recoveries;
+ 	struct clk *hclk;
+ 	int irq;
+ 	u32 ee;
+@@ -939,6 +943,77 @@ static void qcom_swrm_recover(struct qcom_swrm_ctrl *ctrl, bool reprobe)
+ 	pm_runtime_put_autosuspend(ctrl->dev);
+ }
+ 
++/*
++ * Recover a bus that faulted under a running stream: reset and re-enumerate
++ * it, then take each stream that was running through DISABLED and
++ * sdw_prepare_stream() again, which re-applies its port setup on both
++ * sides, and enable it. The stream's ports carry nothing useful while the
++ * bus is broken, so this costs a short gap instead of silence until the
++ * stream closes. Bounded, so a bus that faults again on every restart
++ * falls back to waiting for the stream to stop.
++ *
++ * Called like qcom_swrm_recover(). qcom_swrm_hw_free() takes recovery_lock,
++ * so the streams found here stay on the bus until this returns.
++ */
++static void qcom_swrm_recover_running(struct qcom_swrm_ctrl *ctrl)
++{
++	struct sdw_stream_runtime *streams[SWRM_MAX_RECOVER_STREAMS];
++	bool enabled[SWRM_MAX_RECOVER_STREAMS];
++	struct sdw_master_runtime *m_rt;
++	int i, n = 0, ret;
++
++	if (!atomic_read(&ctrl->recovery_pending))
++		return;
++
++	if (ctrl->running_recoveries >= SWRM_MAX_RUNNING_RECOVERIES) {
++		dev_err_ratelimited(ctrl->dev,
++				    "bus fault under a running stream, recovery deferred until it stops\n");
++		return;
++	}
++	ctrl->running_recoveries++;
++
++	mutex_lock(&ctrl->bus.bus_lock);
++	list_for_each_entry(m_rt, &ctrl->bus.m_rt_list, bus_node) {
++		if (m_rt->stream->state != SDW_STREAM_PREPARED &&
++		    m_rt->stream->state != SDW_STREAM_ENABLED)
++			continue;
++		if (n == SWRM_MAX_RECOVER_STREAMS)
++			break;
++		streams[n] = m_rt->stream;
++		enabled[n] = m_rt->stream->state == SDW_STREAM_ENABLED;
++		n++;
++	}
++	mutex_unlock(&ctrl->bus.bus_lock);
++
++	dev_warn(ctrl->dev, "bus fault under %d running stream(s), recovering\n", n);
++	qcom_swrm_recover(ctrl, true);
++	if (ctrl->recovery_failed)
++		return;
++
++	for (i = 0; i < n; i++) {
++		if (enabled[i]) {
++			ret = sdw_disable_stream(streams[i]);
++			if (ret)
++				goto err;
++		}
++		ret = sdw_prepare_stream(streams[i]);
++		if (ret)
++			goto err;
++		if (enabled[i]) {
++			ret = sdw_enable_stream(streams[i]);
++			if (ret)
++				goto err;
++		}
++		dev_info(ctrl->dev, "stream %s restarted after bus recovery\n",
++			 streams[i]->name);
++	}
++	return;
++
++err:
++	dev_err(ctrl->dev, "restarting stream %s after bus recovery failed: %d\n",
++		streams[i]->name, ret);
++}
++
+ static void qcom_swrm_recover_work(struct work_struct *work)
+ {
+ 	struct qcom_swrm_ctrl *ctrl =
+@@ -946,9 +1021,14 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ 
+ 	mutex_lock(&qcom_swrm_probe_recovery_lock);
+ 	mutex_lock(&ctrl->recovery_lock);
+-	if (READ_ONCE(ctrl->recovery_ready) && !ctrl->system_suspended &&
+-	    !qcom_swrm_stream_running(ctrl))
+-		qcom_swrm_recover(ctrl, true);
++	if (READ_ONCE(ctrl->recovery_ready) && !ctrl->system_suspended) {
++		if (qcom_swrm_stream_running(ctrl)) {
++			qcom_swrm_recover_running(ctrl);
++		} else {
++			ctrl->running_recoveries = 0;
++			qcom_swrm_recover(ctrl, true);
++		}
++	}
+ 	mutex_unlock(&ctrl->recovery_lock);
+ 	mutex_unlock(&qcom_swrm_probe_recovery_lock);
+ }
+@@ -1671,8 +1751,12 @@ static int qcom_swrm_hw_free(struct snd_pcm_substream *substream,
+ 	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(dai->dev);
+ 	struct sdw_stream_runtime *sruntime = ctrl->sruntime[dai->id];
+ 
++	/* Not while qcom_swrm_recover_running() re-programs this stream. */
++	mutex_lock(&ctrl->recovery_lock);
+ 	qcom_swrm_stream_free_ports(ctrl, sruntime);
+ 	sdw_stream_remove_master(&ctrl->bus, sruntime);
++	ctrl->running_recoveries = 0;
++	mutex_unlock(&ctrl->recovery_lock);
+ 
+ 	return 0;
+ }

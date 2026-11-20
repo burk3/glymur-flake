@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Sun, 12 Jul 2026 17:48:58 +0100
+Subject: [PATCH 18/22] ASoC: codecs: lpass-rx-macro: handle version 2.9 and
+ sm8550 NPL clock
+
+Add LPASS_CODEC_VERSION_2_9 to the version-based switch statements so
+it is handled the same as other 2.5-family variants (including Glymur).
+
+Also add LPASS_MACRO_FLAG_HAS_NPL_CLOCK to the sm8550 match entry; the
+missing flag left sm8550 running without its NPL clock and caused
+sporadic playback stalls.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 0496ea850258a5d0e36cf5e2d2e0cef30b1e3045)
+(cherry picked from commit c47735063b63ded1cd56313e9b2406d90cf7f592)
+---
+ sound/soc/codecs/lpass-rx-macro.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sound/soc/codecs/lpass-rx-macro.c b/sound/soc/codecs/lpass-rx-macro.c
+index 0d5ea75e5018..dbca28a6891d 100644
+--- a/sound/soc/codecs/lpass-rx-macro.c
++++ b/sound/soc/codecs/lpass-rx-macro.c
+@@ -3991,6 +3991,7 @@ static const struct of_device_id rx_macro_dt_match[] = {
+ 		.data = (void *)LPASS_MACRO_FLAG_HAS_NPL_CLOCK,
+ 	}, {
+ 		.compatible = "qcom,sm8550-lpass-rx-macro",
++		.data = (void *)LPASS_MACRO_FLAG_HAS_NPL_CLOCK,
+ 	}, {
+ 		.compatible = "qcom,sc8280xp-lpass-rx-macro",
+ 		.data = (void *)LPASS_MACRO_FLAG_HAS_NPL_CLOCK,

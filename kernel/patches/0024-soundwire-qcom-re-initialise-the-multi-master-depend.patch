@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 18:56:22 -0800
+Subject: [PATCH 24/27] NOT-FOR-UPSTREAM: soundwire: qcom: re-initialise the multi-master
+ dependent behind the primary
+
+At probe the primary initialises the dependent controller after its own
+frame is running. After that the dependent is never touched again: it has
+no bus of its own and no runtime PM, and the primary's resume paths only
+re-program MM_SYNC on it. Its registers survive system sleep, but its
+data ports do not stay lined up with the primary's frame.
+
+On the ASUS Zenbook A16 the WCD9378 headphone port is fed from swr1 (the
+dependent of swr2). With bank switches sent through both controllers,
+the left/right orientation is correct on every stream start after boot,
+but after an s2idle cycle it comes back swapped about half the time and
+then stays swapped for every later start until the next suspend: 14 of
+29 cycles (held stream or not), checked on a line-in loopback. The
+dependent's COMP_CFG, MM_SYNC_CONFIG, frame control and MCP_STATUS read
+the same before and after.
+
+Initialise the dependent again whenever the primary's frame restarts:
+after a clock-stop exit, after the reset-based resume and after a bus
+recovery, the way probe does it. With that, 16 of 16 s2idle cycles came
+out correct (6 with the headphone stream held open across suspend, 4
+with a speaker stream held, 2 with the headset mic capturing, 4 idle;
+38 of 38 starts after them), as did a debug build's 12 of 12.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 30 ++++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index c6823c77fb0c..f18e0621e3c5 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -826,6 +826,7 @@ static irqreturn_t qcom_swrm_wake_irq_handler(int irq, void *dev_id)
+ }
+ 
+ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl);
++static int qcom_swrm_init_peer(struct qcom_swrm_ctrl *ctrl);
+ static void qcom_swrm_reprobe_unattached_slaves(struct qcom_swrm_ctrl *ctrl);
+ 
+ static bool qcom_swrm_all_slaves_online(struct qcom_swrm_ctrl *ctrl)
+@@ -924,6 +925,9 @@ static void qcom_swrm_recover(struct qcom_swrm_ctrl *ctrl, bool reprobe)
+ 		goto recovery_failed;
+ 	usleep_range(2000, 2050);
+ 	ret = qcom_swrm_init(ctrl);
++	if (ret)
++		goto recovery_failed;
++	ret = qcom_swrm_init_peer(ctrl);
+ 	if (ret)
+ 		goto recovery_failed;
+ 	qcom_swrm_sync_bank(ctrl);
+@@ -1458,6 +1462,21 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
+ 	return 0;
+ }
+ 
++/*
++ * Bring a multi-master dependent up again behind its primary, as probe
++ * does. Across system sleep the dependent keeps its registers, but its
++ * data ports can come back at a fixed offset from the primary's frame
++ * that no bank switch corrects; initialising it again once the primary's
++ * frame runs lines it up. Do it whenever the primary's frame restarts.
++ */
++static int qcom_swrm_init_peer(struct qcom_swrm_ctrl *ctrl)
++{
++	if (!ctrl->is_primary || !ctrl->peer_ctrl)
++		return 0;
++
++	return qcom_swrm_init(ctrl->peer_ctrl);
++}
++
+ static int qcom_swrm_read_prop(struct sdw_bus *bus)
+ {
+ 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
+@@ -2512,8 +2531,7 @@ static int qcom_swrm_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		goto err_master_add;
+ 
+-	if (ctrl->is_primary && ctrl->peer_ctrl)
+-		qcom_swrm_init(ctrl->peer_ctrl);
++	qcom_swrm_init_peer(ctrl);
+ 
+ 	if (!wait_event_timeout(ctrl->slaves_wait,
+ 				qcom_swrm_all_slaves_online(ctrl),
+@@ -2653,6 +2671,10 @@ static int __maybe_unused swrm_runtime_resume(struct device *dev)
+ 		if (ret)
+ 			goto err_clk;
+ 
++		ret = qcom_swrm_init_peer(ctrl);
++		if (ret)
++			goto err_clk;
++
+ 		/* wait for hw enumeration to complete */
+ 		if (!wait_for_completion_timeout(&ctrl->enumeration,
+ 						 msecs_to_jiffies(TIMEOUT_MS))) {
+@@ -2718,6 +2740,10 @@ static int __maybe_unused swrm_runtime_resume(struct device *dev)
+ 		if (ret)
+ 			goto err_clk;
+ 
++		ret = qcom_swrm_init_peer(ctrl);
++		if (ret)
++			goto err_clk;
++
+ 		ret = sdw_bus_exit_clk_stop(&ctrl->bus);
+ 		if (ret < 0)
+ 			goto err_clk;

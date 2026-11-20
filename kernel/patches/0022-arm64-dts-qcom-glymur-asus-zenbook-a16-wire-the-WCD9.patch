@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 00:13:27 -0800
+Subject: [PATCH 22/22] NOT-FOR-UPSTREAM: arm64: dts: qcom: glymur-asus-zenbook-a16: wire the
+ WCD9378 headset codec
+
+The 3.5 mm headset jack is driven by a WCD9378 (Tambora) SDCA codec in
+compute mode, the arrangement of the Glymur CRD and the Mahua T14s
+(laptops-kernel cd2fa85c8d1e): swr1 (RX) is the SoundWire multi-master
+dependent and lends its two data lanes, swr2 (TX) is the primary and
+enumerates the codec. The codec's reset is TLMM GPIO 191 (16 mA) and
+its interrupt the swr2 one (SPI 761); the T14s port tables, DAI links
+and routes are taken unchanged.
+
+The codec's 1.8 V and 1.2 V supplies are the ones the WSA884x speakers
+already use (L15B, L18B). vdd-mic-bias-supply (BOB1 on the CRD) is left
+out for now; the codec gets a dummy supply.
+
+Assisted-by: Claude Code (Opus 5.5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ .../qcom/glymur-asus-zenbook-a16-ux3607oa.dts | 115 +++++++++++++++++-
+ 1 file changed, 114 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts b/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
+index 4bcc379d2cd0..6ab1d20f6ecf 100644
+--- a/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
++++ b/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
+@@ -372,7 +372,10 @@ sound {
+ 				"WooferRight IN", "WSA2 WSA_SPK1 OUT",
+ 				"TweeterRight IN", "WSA2 WSA_SPK2 OUT",
+ 				"VA DMIC0", "vdd-micb",
+-				"VA DMIC1", "vdd-micb";
++				"VA DMIC1", "vdd-micb",
++				"IT 41 Playback", "HPHL_OUT",
++				"IT 41 Playback", "HPHR_OUT",
++				"TX SWR_INPUT1", "OT 36 Capture";
+ 
+ 		va-dai-link {
+ 			link-name = "VA Capture";
+@@ -408,6 +411,39 @@ platform {
+ 				sound-dai = <&q6apm>;
+ 			};
+ 		};
++
++		/* WCD9378 headset jack; swr2 is the bus primary (see &swr2). */
++		wcd-playback-dai-link {
++			link-name = "WCD Playback";
++
++			codec {
++				sound-dai = <&wcd9378c 0>, <&swr2 0>, <&lpass_rxmacro 0>;
++			};
++
++			cpu {
++				sound-dai = <&q6apmbedai RX_CODEC_DMA_RX_0>;
++			};
++
++			platform {
++				sound-dai = <&q6apm>;
++			};
++		};
++
++		wcd-capture-dai-link {
++			link-name = "WCD Capture";
++
++			codec {
++				sound-dai = <&wcd9378c 18>, <&swr2 1>, <&lpass_txmacro 0>;
++			};
++
++			cpu {
++				sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
++			};
++
++			platform {
++				sound-dai = <&q6apm>;
++			};
++		};
+ 	};
+ 
+ };
+@@ -1170,6 +1206,75 @@ left_tweeter: speaker@0,1 {
+ 	};
+ };
+ 
++/*
++ * WCD9378 (Tambora) headset codec in SDCA compute mode, as on the Glymur
++ * CRD and the Mahua T14s: swr1 (RX) is the multi-master dependent and
++ * contributes data lanes 2/3; swr2 (TX) is the primary, owns the clock,
++ * the control lane and lanes 0/1, and enumerates the codec. Its reset
++ * is TLMM GPIO 191 (16 mA) and its interrupt the swr2 one (GIC SPI
++ * 761); port tables as on the T14s. The 1.8 V and 1.2 V supplies are
++ * shared with the WSA884x speakers.
++ *
++ * vdd-mic-bias-supply (BOB1 on the CRD) is left out for now: the codec
++ * gets a dummy supply.
++ */
++&swr1 {
++	qcom,multi-master-mode = "dependent";
++	qcom,multi-master-peer = <&swr2 0>;
++	num-lanes = <2>;
++
++	status = "okay";
++};
++
++&swr2 {
++	qcom,multi-master-mode = "primary";
++	qcom,multi-master-peer = <&swr1 5>;
++	num-lanes = <2>;
++
++	qcom,ports-sinterval-low =
++		/bits/ 8 <0x00 0x01 0x03 0x03 0x00 0x03 0x1f 0x1f 0 0 0 0 0 0>;
++	qcom,ports-offset1 =
++		/bits/ 8 <0x00 0x01 0x02 0x00 0x00 0x00 0x00 0x0b 0 0 0 0 0 0>;
++	qcom,ports-offset2 =
++		/bits/ 8 <0x00 0x00 0x00 0x00 0xff 0x00 0x00 0x0b 0 0 0 0 0 0>;
++	qcom,ports-hstart =
++		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0x00 0x00 0x00 0xff 0xff 0xff 0xff 0xff 0xff>;
++	qcom,ports-hstop =
++		/bits/ 8 <0xff 0x0f 0xff 0xff 0xff 0x0f 0x0f 0x0f 0xff 0xff 0xff 0xff 0xff 0xff>;
++	qcom,ports-word-length =
++		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0x01 0x07 0x04 0xff 0xff 0xff 0xff 0xff 0xff>;
++	qcom,ports-block-pack-mode =
++		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0x00 0x01 0xff 0xff 0xff 0xff 0xff 0xff>;
++	qcom,ports-block-group-count =
++		/bits/ 8 <0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0xff>;
++	qcom,ports-lane-control =
++		/bits/ 8 <0xff 0x01 0x00 0x01 0xff 0x03 0x02 0x02 0xff 0xff 0xff 0xff 0xff 0xff>;
++	qcom,ports-ch-mask =
++		/bits/ 8 <0xff 0x01 0xff 0xff 0xff 0x03 0x01 0x03 0xff 0xff 0xff 0xff 0xff 0xff>;
++
++	status = "okay";
++
++	wcd9378c: codec@3,0 {
++		compatible = "sdw20217011000";
++		reg = <0 3>;
++
++		pinctrl-0 = <&wcd_default>;
++		pinctrl-names = "default";
++
++		qcom,sdca-compliant;
++
++		qcom,port-mapping = <2 2 3 4 5 6 7 8>;
++
++		reset-gpios = <&tlmm 191 GPIO_ACTIVE_LOW>;
++
++		vdd-buck-supply = <&vreg_l15b_e0>;
++		vdd-rxtx-supply = <&vreg_l15b_e0>;
++		vdd-io-supply = <&vreg_l18b_e0>;
++
++		#sound-dai-cells = <1>;
++	};
++};
++
+ &swr3 {
+ 	status = "okay";
+ 
+@@ -1394,6 +1499,14 @@ wake-n-pins {
+ 			bias-pull-up;
+ 		};
+ 	};
++
++	wcd_default: wcd-reset-n-active-state {
++		pins = "gpio191";
++		function = "gpio";
++		drive-strength = <16>;
++		bias-disable;
++		output-low;
++	};
+ };
+ 
+ &uart14 {

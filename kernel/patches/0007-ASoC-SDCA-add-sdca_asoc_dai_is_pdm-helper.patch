@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Tue, 20 Oct 2026 07:54:55 +0100
+Subject: [PATCH 07/22] ASoC: SDCA: add sdca_asoc_dai_is_pdm() helper
+
+Resolve the SDCA terminal type for a DAI and return true for the
+spec-defined PDM terminals (SDCA_TERM_TYPE_RAW_PDM_MIC and
+SDCA_TERM_TYPE_PDM_RENDER_STREAM).
+
+Used by sdca_class_function to tag PDM streams; expose it so other
+SDCA codec drivers can share the check.
+
+Assisted-by: LLM
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit d88981de9405a548623a384eca1380b35bc39203)
+---
+ include/sound/sdca_asoc.h  |  2 ++
+ sound/soc/sdca/sdca_asoc.c | 23 +++++++++++++++++++++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/include/sound/sdca_asoc.h b/include/sound/sdca_asoc.h
+index 599a72f33515..99c39b5944e3 100644
+--- a/include/sound/sdca_asoc.h
++++ b/include/sound/sdca_asoc.h
+@@ -112,4 +112,6 @@ int sdca_asoc_pde_poll_actual_ps(struct regmap *regmap,
+ 				 int from_ps, int to_ps,
+ 				 const struct sdca_pde_delay *pde_delays,
+ 				 int num_delays);
++bool sdca_asoc_dai_is_pdm(struct sdca_function_data *function,
++			  struct snd_soc_dai *dai);
+ #endif // __SDCA_ASOC_H__
+diff --git a/sound/soc/sdca/sdca_asoc.c b/sound/soc/sdca/sdca_asoc.c
+index ccc579f878ff..559a0fdfd98e 100644
+--- a/sound/soc/sdca/sdca_asoc.c
++++ b/sound/soc/sdca/sdca_asoc.c
+@@ -1781,3 +1781,26 @@ int sdca_asoc_hw_params(struct device *dev, struct regmap *regmap,
+ 	return 0;
+ }
+ EXPORT_SYMBOL_NS(sdca_asoc_hw_params, "SND_SOC_SDCA");
++
++/**
++ * sdca_asoc_dai_is_pdm - True if the DAI is routed to a PDM data-port terminal
++ * @function: Pointer to the Function information.
++ * @dai: Pointer to the ASoC DAI.
++ *
++ * Return: true for SDCA_TERM_TYPE_RAW_PDM_MIC and
++ * SDCA_TERM_TYPE_PDM_RENDER_STREAM, false otherwise.
++ */
++bool sdca_asoc_dai_is_pdm(struct sdca_function_data *function,
++			  struct snd_soc_dai *dai)
++{
++	struct sdca_entity *entity = &function->entities[dai->id];
++
++	switch (entity->iot.type) {
++	case SDCA_TERM_TYPE_RAW_PDM_MIC:
++	case SDCA_TERM_TYPE_PDM_RENDER_STREAM:
++		return true;
++	default:
++		return false;
++	}
++}
++EXPORT_SYMBOL_NS(sdca_asoc_dai_is_pdm, "SND_SOC_SDCA");

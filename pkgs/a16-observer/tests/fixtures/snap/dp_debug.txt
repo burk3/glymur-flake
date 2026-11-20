@@ -1,0 +1,22 @@
+	name = msm_dp
+	drm_dp_link
+		rate = 270000
+		num_lanes = 4
+		capabilities = 1
+	dp_panel_info:
+		active = 1920x1080
+		back_porch = 148x36
+		front_porch = 88x4
+		sync_width = 44x5
+		active_low = 0x0
+		h_skew = 0
+		refresh rate = 60
+		pixel clock khz = 148500
+		bpp = 30
+	dp_link:
+		test_requested = 128
+		num_lanes = 4
+		bw_code = 10
+		lclk = 270000000
+		v_level = 2
+		p_level = 0

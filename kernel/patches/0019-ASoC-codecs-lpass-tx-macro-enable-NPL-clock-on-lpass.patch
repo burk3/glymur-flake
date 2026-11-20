@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Sun, 12 Jul 2026 17:49:19 +0100
+Subject: [PATCH 19/22] ASoC: codecs: lpass-tx-macro: enable NPL clock on
+ lpass_ver_11
+
+lpass_ver_11 is missing LPASS_MACRO_FLAG_HAS_NPL_CLOCK, causing
+sporadic register-write failures early in probe on Glymur.  Set the
+flag alongside the existing RESET_SWR flag.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 797b074c96b1241c68f445e8402aaad68d8d700e)
+(cherry picked from commit d8fe713fb2e83a362eeedde6f39fe0d52787074e)
+---
+ sound/soc/codecs/lpass-tx-macro.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/lpass-tx-macro.c b/sound/soc/codecs/lpass-tx-macro.c
+index 143b5ecbd365..6976fd77faed 100644
+--- a/sound/soc/codecs/lpass-tx-macro.c
++++ b/sound/soc/codecs/lpass-tx-macro.c
+@@ -2498,7 +2498,8 @@ static const struct tx_macro_data lpass_ver_10_sm6115 = {
+ };
+ 
+ static const struct tx_macro_data lpass_ver_11 = {
+-	.flags			= LPASS_MACRO_FLAG_RESET_SWR,
++	.flags			= LPASS_MACRO_FLAG_HAS_NPL_CLOCK |
++				  LPASS_MACRO_FLAG_RESET_SWR,
+ 	.ver			= LPASS_VER_11_0_0,
+ 	.extra_widgets		= tx_macro_dapm_widgets_v9_2,
+ 	.extra_widgets_num	= ARRAY_SIZE(tx_macro_dapm_widgets_v9_2),

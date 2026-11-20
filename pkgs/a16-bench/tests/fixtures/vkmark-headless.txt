@@ -1,0 +1,15 @@
+=======================================================
+    vkmark 2025.01
+=======================================================
+    Vendor ID:      0x1002
+    Device ID:      0x1586
+    Device Name:    AMD Radeon 8060S Graphics (RADV STRIX_HALO)
+    Driver Version: 109056008
+    Device UUID:    d1b1333d1ff325da19ab04ba5f9a3259
+=======================================================
+[cube] duration=1: FPS: 65494 FrameTime: 0.015 ms
+[shading] shading=phong:duration=1: FPS: 63594 FrameTime: 0.016 ms
+[clear] duration=1: FPS: 77238 FrameTime: 0.013 ms
+=======================================================
+                                   vkmark Score: 68775
+=======================================================

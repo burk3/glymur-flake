@@ -1,0 +1,45 @@
+---
+build-info:
+      compiler: 'gcc 15.2.0'
+      source-date-epoch: 315532800
+      stdc-version: '199901L'
+      stdc-hosted: '1'
+
+system-info:
+      stress-ng-version: '0.21.01'
+      run-by: 'user'
+      date-yyyy-mm-dd: '2026:10:25'
+      time-hh-mm-ss: '10:03:44'
+      epoch-secs: 1792947824
+      hostname: 'the observer host'
+      sysname: 'Linux'
+      nodename: 'the observer host'
+      release: '7.2.9'
+      version: '#1-NixOS SMP PREEMPT_DYNAMIC Sat Oct  3 10:43:16 UTC 2026'
+      machine: 'x86_64'
+      compiler: 'gcc 15.2.0'
+      libc: 'glibc 2.42'
+      uptime: 722667
+      totalram: 67192467456
+      freeram: 2170691584
+      sharedram: 1084407808
+      bufferram: 32768
+      totalswap: 137438949376
+      freeswap: 134310260736
+      pagesize: 4096
+      cpus: 32
+      cpus-online: 32
+      ticks-per-second: 100
+
+metrics:
+    - stressor: cpu
+      bogo-ops: 7398
+      bogo-ops-per-second-usr-sys-time: 2470.834600
+      bogo-ops-per-second-real-time: 2465.600265
+      wall-clock-time: 3.000486
+      user-time: 2.994130
+      system-time: 0.000000
+      cpu-usage-per-instance: 99.788155
+      max-rss: 6628
+
+...

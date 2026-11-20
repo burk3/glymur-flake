@@ -1,0 +1,49 @@
+domain                          status          children        performance
+    /device                         runtime status                  managed by
+------------------------------------------------------------------------------
+disp_cc_mdss_core_int2_gdsc     off-0                           0
+disp_cc_mdss_core_gdsc          on                              0
+    ae00000.display-subsystem       active                      0           SW
+video_cc_mvs1_gdsc              off-0                           0
+video_cc_mvs0c_gdsc             off-0                           0
+                                                video_cc_mvs0_gdsc
+video_cc_mvs0_gdsc              off-0                           0
+gx_clkctl_gx_gdsc               off-0                           0
+    genpd:1:3d6c000.gmu             suspended                   0           SW
+gpu_cc_cx_gdsc                  off-0                           0
+                                                gx_clkctl_gx_gdsc
+    genpd:2:3d64000.clock-controller  suspended                   0           SW
+    3da0000.iommu                   suspended                   0           SW
+    genpd:0:3d6c000.gmu             suspended                   0           SW
+eva_cc_mvs0c_gdsc               off-0                           0
+                                                eva_cc_mvs0_gdsc
+eva_cc_mvs0_gdsc                off-0                           0
+cam_cc_titan_top_gdsc           off-0                           0
+                                                cam_cc_bps_gdsc, cam_cc_ife_0_gdsc, cam_cc_ife_1_gdsc, cam_cc_ipe_0_gdsc
+    ac15000.cci                     suspended                   0           SW
+    genpd:0:ace4000.phy             suspended                   0           SW
+    genpd:0:acec000.phy             suspended                   0           SW
+    ac16000.cci                     suspended                   0           SW
+    genpd:2:acb6000.isp             suspended                   0           SW
+    20-0024                         suspended                   0           SW
+    23-0036                         suspended                   0           SW
+cam_cc_ipe_0_gdsc               off-0                           0
+cam_cc_ife_1_gdsc               off-0                           0
+cam_cc_ife_0_gdsc               off-0                           0
+    genpd:0:acb6000.isp             suspended                   0           SW
+cam_cc_bps_gdsc                 off-0                           0
+gcc_usb_2_phy_gdsc              on                              0
+    88e1000.phy                     active                      0           SW
+    aux_bridge.aux_bridge.2         unsupported                 0           SW
+gcc_usb_1_phy_gdsc              on                              0
+    fde000.phy                      active                      0           SW
+    aux_bridge.aux_bridge.1         unsupported                 0           SW
+gcc_usb30_sec_gdsc              on                              256
+    a800000.usb                     active                      256         SW
+gcc_usb30_prim_gdsc             on                              256
+    a600000.usb                     active                      256         SW
+--
+                                                gcc_pcie_0_tunnel_gdsc, gcc_pcie_1_tunnel_gdsc, gcc_pcie_2_tunnel_gdsc, gcc_pcie_3a_gdsc, gcc_pcie_3a_phy_gdsc, gcc_pcie_3b_gdsc, gcc_pcie_3b_phy_gdsc, gcc_pcie_4_gdsc, gcc_pcie_4_phy_gdsc, gcc_pcie_5_gdsc, gcc_pcie_5_phy_gdsc, gcc_pcie_6_gdsc, gcc_pcie_6_phy_gdsc, gcc_ufs_phy_gdsc, gcc_usb20_prim_gdsc, gcc_usb30_mp_gdsc, gcc_usb30_prim_gdsc, gcc_usb30_sec_gdsc, gcc_usb30_tert_gdsc, gcc_usb3_mp_ss0_phy_gdsc, gcc_usb3_mp_ss1_phy_gdsc, gcc_usb4_0_gdsc, gcc_usb4_1_gdsc, gcc_usb4_2_gdsc, gcc_usb_0_phy_gdsc, gcc_usb_1_phy_gdsc, gcc_usb_2_phy_gdsc, gpu_cc_cx_gdsc
+    100000.clock-controller         active                      0           SW
+    genpd:1:3d90000.clock-controller  active                      64          SW
+    genpd:0:d00000.remoteproc       suspended                   0           SW

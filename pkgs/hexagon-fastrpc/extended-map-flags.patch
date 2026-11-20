@@ -1,0 +1,38 @@
+From the proposed public API addition in Qualcomm FastRPC PR 346:
+https://github.com/qualcomm/fastrpc/pull/346
+
+llama.cpp's Hexagon backend uses these SDK flags for weights beyond the
+DSP's ordinary virtual address range. Preserve their ABI values (17/18).
+
+--- a/inc/fastrpc_internal.h
++++ b/inc/fastrpc_internal.h
+@@ -50,9 +50,6 @@
+ /* Max value of remote_mem_map_flags, used to validate the input flag */
+ #define REMOTE_MAP_MAX_FLAG REMOTE_MAP_MEM_STATIC + 1
+ 
+-/* Max value of fastrpc_map_flags, used to validate range of supported flags */
+-#define FASTRPC_MAP_MAX FASTRPC_MAP_FD_NOMAP + 1
+-
+ #if !(defined __qdsp6__) && !(defined __hexagon__)
+ static __inline uint32_t Q6_R_cl0_R(uint32_t num) {
+    int ii;
+--- a/inc/remote.h
++++ b/inc/remote.h
+@@ -698,7 +698,16 @@ enum fastrpc_map_flags {
+      */
+     FASTRPC_MAP_FD_NOMAP,
+ 
+-    /** Update FASTRPC_MAP_MAX when adding new value to this enum **/
++    /**
++     * These 2 flags work the same way as FASTRPC_MAP_FD and
++     * FASTRPC_MAP_FD_DELAYED with the only difference being the DSP mapping
++     * created in the extended address space.
++     */
++    FASTRPC_MAP_FD_EXTENDED,
++    FASTRPC_MAP_FD_DELAYED_EXTENDED,
++
++    /** Always keep this as the last member */
++    FASTRPC_MAP_MAX,
+ };
+ 
+ /**

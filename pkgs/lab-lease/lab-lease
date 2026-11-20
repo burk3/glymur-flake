@@ -1,0 +1,483 @@
+#!/usr/bin/env bash
+# lab-lease: advisory leases on shared lab resources, so concurrent Claude
+# agents and the main session know about each other before they change the
+# A16's state or load the builder / the kernel clone.
+#
+# Resources: a16 (any state change on the A16: deploy, reboot, sysfs writes,
+# serial console input), the builder (aarch64 kernel builds), linux-git (heavy git
+# in ~/src/linux). The a16 lease is enforced for Claude by
+# .claude/hooks/lease-guard.sh; the others are convention only.
+#
+# State: ${XDG_STATE_HOME:-~/.local/state}/lab-lease/<res> (holder, task, pid,
+# start, expiry), <res>.frozen (reason), <res>.lock (flock), log (history).
+#
+# A lease is stale once past its expiry, or when it records a pid and that
+# process is gone. `acquire` records no pid unless --pid is given (an agent's
+# shell exits right after the call), so plain acquires live until expiry or
+# release; `with` records its own pid and so goes stale if it is killed.
+#
+# Callers identify themselves with LAB_LEASE_HOLDER (agents: their name),
+# falling back to $USER. The hook passes an A16-mutating command that names
+# (LAB_LEASE_HOLDER=NAME) the live a16 holder; it asks `holder a16 NAME`.
+#
+# `acquire --wait` polls (every $LAB_LEASE_POLL seconds, default 10) until the
+# lease is free or stale, and gives up with exit 5 after its duration (default
+# 2h). A freeze ends the wait at once with exit 3.
+
+set -euo pipefail
+
+prog=lab-lease
+resources=${LAB_LEASE_RESOURCES:-"dut builder git"}
+dir=${LAB_LEASE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lab-lease}
+logfile=$dir/log
+
+die() {
+  echo "$prog: $*" >&2
+  exit 2
+}
+
+usage() {
+  cat <<EOF
+usage: $prog acquire <res> [--holder NAME] --task TEXT [--ttl 30m] [--pid PID]
+                            [--wait [2h]]   block until free; exit 5 timeout, 3 frozen
+       $prog release <res> [--holder NAME] [--force]
+       $prog renew   <res> [--holder NAME] [--ttl 30m]
+       $prog with    <res> [--holder NAME] [--task TEXT] [--ttl 30m] -- CMD...
+       $prog status  [res]
+       $prog check   <res>          exit 0 held, 1 free or stale, 3 frozen
+       $prog holder  <res> [NAME]   print the live holder; exit 0 held (by NAME if
+                                    given), 1 free or stale, 3 frozen, 4 held by another
+       $prog freeze  <res> REASON   nobody may acquire until unfrozen (for humans)
+       $prog unfreeze <res>
+
+  resources: $resources
+  --holder defaults to \$LAB_LEASE_HOLDER, else \$USER (now: $(default_holder))
+  --ttl takes s/m/h/d suffixes (bare number = seconds); default 30m
+  state: $dir
+EOF
+}
+
+default_holder() { echo "${LAB_LEASE_HOLDER:-${USER:-unknown}}"; }
+
+check_res() {
+  local r
+  for r in $resources; do
+    [ "$1" = "$r" ] && return 0
+  done
+  die "unknown resource '$1' (known: $resources)"
+}
+
+parse_ttl() {
+  local v=$1 n unit
+  [[ $v =~ ^([0-9]+)([smhd]?)$ ]] || die "bad --ttl '$v' (e.g. 90s, 30m, 2h)"
+  n=${BASH_REMATCH[1]}
+  unit=${BASH_REMATCH[2]}
+  case $unit in
+    m) n=$((n * 60)) ;;
+    h) n=$((n * 3600)) ;;
+    d) n=$((n * 86400)) ;;
+  esac
+  [ "$n" -gt 0 ] || die "--ttl must be positive"
+  echo "$n"
+}
+
+now() { date +%s; }
+fmt_time() { date -d "@$1" '+%F %T'; }
+
+# Start time (clock ticks since boot) of a pid, to catch pid reuse.
+pid_start() {
+  local stat
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  stat=${stat##*) }
+  # shellcheck disable=SC2086
+  set -- $stat
+  echo "${20}"
+}
+
+log() {
+  mkdir -p "$dir"
+  printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$logfile"
+}
+
+# Loads the lease of $res into L_* (L_holder empty when free).
+load() {
+  L_holder="" L_task="" L_pid="" L_pidstart="" L_start="" L_expiry=""
+  local f=$dir/$1 k v
+  [ -s "$f" ] || return 0
+  while IFS='=' read -r k v; do
+    case $k in
+      holder) L_holder=$v ;;
+      task) L_task=$v ;;
+      pid) L_pid=$v ;;
+      pidstart) L_pidstart=$v ;;
+      start) L_start=$v ;;
+      expiry) L_expiry=$v ;;
+    esac
+  done <"$f"
+}
+
+load_frozen() {
+  F_reason="" F_by="" F_since=""
+  local f=$dir/$1.frozen k v
+  [ -e "$f" ] || return 1
+  while IFS='=' read -r k v; do
+    case $k in
+      reason) F_reason=$v ;;
+      by) F_by=$v ;;
+      since) F_since=$v ;;
+    esac
+  done <"$f"
+  return 0
+}
+
+# Why the loaded lease is stale ("" when it is live). Needs load first.
+stale_reason() {
+  if [ -n "$L_expiry" ] && [ "$(now)" -ge "$L_expiry" ]; then
+    echo "expired $(fmt_time "$L_expiry")"
+  elif [ -n "$L_pid" ] && [ "$L_pid" != 0 ]; then
+    local s
+    if ! s=$(pid_start "$L_pid"); then
+      echo "pid $L_pid gone"
+    elif [ -n "$L_pidstart" ] && [ "$s" != "$L_pidstart" ]; then
+      echo "pid $L_pid reused"
+    fi
+  fi
+}
+
+describe() {
+  echo "  holder: $L_holder"
+  echo "  task:   $L_task"
+  echo "  since:  $(fmt_time "$L_start")"
+  echo "  expiry: $(fmt_time "$L_expiry")"
+  [ -z "$L_pid" ] || [ "$L_pid" = 0 ] || echo "  pid:    $L_pid"
+}
+
+write_lease() { # res holder task pid ttl [start]
+  local res=$1 holder=$2 task=$3 pid=$4 ttl=$5 start=${6:-} t ps=""
+  t=$(now)
+  [ -n "$start" ] || start=$t
+  if [ -n "$pid" ] && [ "$pid" != 0 ]; then
+    ps=$(pid_start "$pid") || die "pid $pid does not exist"
+  fi
+  printf 'holder=%s\ntask=%s\npid=%s\npidstart=%s\nstart=%s\nexpiry=%s\n' \
+    "$holder" "${task//$'\n'/ }" "$pid" "$ps" "$start" "$((t + ttl))" >"$dir/$res.tmp"
+  mv "$dir/$res.tmp" "$dir/$res"
+}
+
+lock() {
+  mkdir -p "$dir"
+  exec 9>"$dir/$1.lock"
+  flock 9
+}
+unlock() { exec 9>&-; }
+
+# acquire under the lock; returns 0 acquired, 1 held, 3 frozen, 4 already ours
+# (live). With A_quiet=1 a live conflicting lease is not described.
+A_quiet=0
+do_acquire() { # res holder task ttl pid
+  local res=$1 holder=$2 task=$3 ttl=$4 pid=$5 why
+  lock "$res"
+  if load_frozen "$res"; then
+    unlock
+    echo "$prog: $res is frozen by $F_by since $(fmt_time "$F_since"): $F_reason" >&2
+    return 3
+  fi
+  load "$res"
+  if [ -n "$L_holder" ]; then
+    why=$(stale_reason)
+    if [ -z "$why" ]; then
+      if [ "$L_holder" = "$holder" ]; then
+        unlock
+        return 4
+      fi
+      unlock
+      if [ "$A_quiet" != 1 ]; then
+        echo "$prog: $res is held" >&2
+        describe >&2
+      fi
+      return 1
+    fi
+    echo "$prog: taking over stale $res lease ($why):" >&2
+    describe >&2
+    log "takeover $res by=$holder from=$L_holder ($why) old-task=$L_task"
+  fi
+  write_lease "$res" "$holder" "$task" "$pid" "$ttl"
+  log "acquire $res holder=$holder ttl=${ttl}s pid=${pid:-none} task=$task"
+  unlock
+}
+
+do_release() { # res holder force [pid]
+  local res=$1 holder=$2 force=$3 pid=${4:-}
+  lock "$res"
+  load "$res"
+  if [ -z "$L_holder" ]; then
+    unlock
+    echo "$prog: $res is not held" >&2
+    return 0
+  fi
+  if [ "$force" != 1 ]; then
+    if [ "$L_holder" != "$holder" ] || { [ -n "$pid" ] && [ "$L_pid" != "$pid" ]; }; then
+      unlock
+      echo "$prog: $res is held by someone else, not releasing (--force to override)" >&2
+      describe >&2
+      return 1
+    fi
+  fi
+  rm -f "$dir/$res"
+  log "release $res by=$holder$([ "$force" = 1 ] && echo " (force, holder was $L_holder)") task=$L_task"
+  unlock
+}
+
+cmd_acquire() {
+  local res=${1:-} holder task="" ttl=1800 pid="" rc=0 wait="" deadline waiting=""
+  [ -n "$res" ] || die "acquire needs a resource"
+  shift
+  check_res "$res"
+  holder=$(default_holder)
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --holder) holder=${2:?--holder needs a value}; shift 2 ;;
+      --task) task=${2:?--task needs a value}; shift 2 ;;
+      --ttl) ttl=$(parse_ttl "${2:?--ttl needs a value}"); shift 2 ;;
+      --pid) pid=${2:?--pid needs a value}; shift 2 ;;
+      --wait)
+        wait=7200
+        shift
+        if [ $# -gt 0 ] && [[ $1 =~ ^[0-9]+[smhd]?$ ]]; then
+          wait=$(parse_ttl "$1")
+          shift
+        fi
+        ;;
+      *) die "acquire: unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$task" ] || die "acquire needs --task"
+  if [ -n "$wait" ]; then
+    deadline=$(($(now) + wait))
+    A_quiet=1
+  fi
+  do_acquire "$res" "$holder" "$task" "$ttl" "$pid" || rc=$?
+  while [ -n "$wait" ] && [ "$rc" = 1 ]; do
+    # do_acquire left the conflicting lease in L_*: name it once per holder.
+    if [ "$L_holder" != "$waiting" ]; then
+      waiting=$L_holder
+      echo "$prog: waiting until $(fmt_time "$deadline") for $res, held by $L_holder:" >&2
+      describe >&2
+    fi
+    if [ "$(now)" -ge "$deadline" ]; then
+      echo "$prog: gave up waiting for $res (held by $L_holder)" >&2
+      return 5
+    fi
+    sleep "${LAB_LEASE_POLL:-10}"
+    rc=0
+    do_acquire "$res" "$holder" "$task" "$ttl" "$pid" || rc=$?
+  done
+  [ -z "$wait" ] || [ "$rc" != 3 ] || return 3
+  case $rc in
+    0) echo "$prog: $res acquired by $holder until $(fmt_time "$(($(now) + ttl))")" ;;
+    4)
+      # Re-acquire by the live holder refreshes task and expiry.
+      lock "$res"
+      load "$res"
+      write_lease "$res" "$holder" "$task" "${pid:-$L_pid}" "$ttl" "$L_start"
+      log "reacquire $res holder=$holder ttl=${ttl}s task=$task"
+      unlock
+      echo "$prog: $res already held by $holder; refreshed until $(fmt_time "$(($(now) + ttl))")"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd_release() {
+  local res=${1:-} holder force=0
+  [ -n "$res" ] || die "release needs a resource"
+  shift
+  check_res "$res"
+  holder=$(default_holder)
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --holder) holder=${2:?--holder needs a value}; shift 2 ;;
+      --force) force=1; shift ;;
+      *) die "release: unknown argument '$1'" ;;
+    esac
+  done
+  do_release "$res" "$holder" "$force"
+}
+
+cmd_renew() {
+  local res=${1:-} holder ttl=1800
+  [ -n "$res" ] || die "renew needs a resource"
+  shift
+  check_res "$res"
+  holder=$(default_holder)
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --holder) holder=${2:?--holder needs a value}; shift 2 ;;
+      --ttl) ttl=$(parse_ttl "${2:?--ttl needs a value}"); shift 2 ;;
+      *) die "renew: unknown argument '$1'" ;;
+    esac
+  done
+  lock "$res"
+  if load_frozen "$res"; then
+    unlock
+    echo "$prog: $res is frozen by $F_by: $F_reason; not renewing" >&2
+    return 1
+  fi
+  load "$res"
+  if [ "$L_holder" != "$holder" ]; then
+    unlock
+    echo "$prog: $res is not held by $holder${L_holder:+ (holder: $L_holder)}" >&2
+    return 1
+  fi
+  if [ -n "$L_pid" ] && [ "$L_pid" != 0 ] && [[ $(stale_reason) == pid* ]]; then
+    unlock
+    echo "$prog: $res lease's pid $L_pid is gone; acquire again" >&2
+    return 1
+  fi
+  write_lease "$res" "$holder" "$L_task" "$L_pid" "$ttl" "$L_start"
+  log "renew $res holder=$holder ttl=${ttl}s"
+  unlock
+  echo "$prog: $res renewed by $holder until $(fmt_time "$(($(now) + ttl))")"
+}
+
+cmd_with() {
+  local res=${1:-} holder task="" ttl=1800 rc=0
+  [ -n "$res" ] || die "with needs a resource"
+  shift
+  check_res "$res"
+  holder=$(default_holder)
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --holder) holder=${2:?--holder needs a value}; shift 2 ;;
+      --task) task=${2:?--task needs a value}; shift 2 ;;
+      --ttl) ttl=$(parse_ttl "${2:?--ttl needs a value}"); shift 2 ;;
+      --) shift; break ;;
+      *) die "with: unknown argument '$1' (missing -- before the command?)" ;;
+    esac
+  done
+  [ $# -gt 0 ] || die "with needs a command after --"
+  [ -n "$task" ] || task="$*"
+  do_acquire "$res" "$holder" "$task" "$ttl" "$$" || rc=$?
+  case $rc in
+    0)
+      # Renew every third of the TTL while CMD runs: the lease records our
+      # pid and goes stale if we die, but the TTL alone used to expire a long
+      # build (2026-10-24: a 2 h kernel build lost the builder after 30 min).
+      (
+        while sleep "$((ttl / 3 > 0 ? ttl / 3 : 1))"; do
+          cmd_renew "$res" --holder "$holder" --ttl "$ttl" >/dev/null 2>&1 || exit 0
+        done
+      ) </dev/null >/dev/null 2>&1 &
+      W_renewer=$!
+      # Release on any exit; signals exit (and so release) once CMD returns.
+      W_res=$res W_holder=$holder
+      trap 'pkill -P "$W_renewer" 2>/dev/null || true; kill "$W_renewer" 2>/dev/null || true; do_release "$W_res" "$W_holder" 0 "$$" 2>/dev/null || true' EXIT
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      ;;
+    4) echo "$prog: $res already held by $holder; running under that lease" >&2 ;;
+    *) return 1 ;;
+  esac
+  rc=0
+  "$@" || rc=$?
+  return "$rc"
+}
+
+cmd_check() {
+  local res=${1:-}
+  [ -n "$res" ] || die "check needs a resource"
+  check_res "$res"
+  load_frozen "$res" && return 3
+  load "$res"
+  [ -n "$L_holder" ] && [ -z "$(stale_reason)" ]
+}
+
+cmd_holder() {
+  local res=${1:-} name=${2:-} frozen=0
+  [ -n "$res" ] || die "holder needs a resource"
+  check_res "$res"
+  load_frozen "$res" && frozen=1
+  load "$res"
+  if [ -n "$L_holder" ] && [ -z "$(stale_reason)" ]; then
+    echo "$L_holder"
+  else
+    L_holder=""
+  fi
+  [ "$frozen" = 0 ] || return 3
+  [ -n "$L_holder" ] || return 1
+  [ -z "$name" ] || [ "$name" = "$L_holder" ] || return 4
+}
+
+cmd_status() {
+  local list=$resources r state why exp
+  if [ $# -gt 0 ]; then
+    check_res "$1"
+    list=$1
+  fi
+  printf '%-10s %-8s %-16s %-19s %-19s %s\n' RESOURCE STATE HOLDER SINCE EXPIRES TASK
+  for r in $list; do
+    load "$r"
+    state=free
+    why=""
+    if [ -n "$L_holder" ]; then
+      why=$(stale_reason)
+      if [ -n "$why" ]; then state=stale; else state=held; fi
+    fi
+    exp=-
+    [ -z "$L_expiry" ] || exp=$(fmt_time "$L_expiry")
+    printf '%-10s %-8s %-16s %-19s %-19s %s\n' "$r" "$state" "${L_holder:--}" \
+      "$([ -n "$L_start" ] && fmt_time "$L_start" || echo -)" "$exp" \
+      "${L_task:--}${L_pid:+ [pid $L_pid]}${why:+ ($why)}"
+    if load_frozen "$r"; then
+      echo "           FROZEN by $F_by since $(fmt_time "$F_since"): $F_reason"
+    fi
+  done
+}
+
+cmd_freeze() {
+  local res=${1:-} reason
+  [ -n "$res" ] || die "freeze needs a resource"
+  shift
+  check_res "$res"
+  reason="$*"
+  [ -n "$reason" ] || die "freeze needs a reason"
+  lock "$res"
+  printf 'reason=%s\nby=%s\nsince=%s\n' "${reason//$'\n'/ }" "$(default_holder)" "$(now)" \
+    >"$dir/$res.frozen"
+  log "freeze $res by=$(default_holder) reason=$reason"
+  unlock
+  echo "$prog: $res frozen"
+}
+
+cmd_unfreeze() {
+  local res=${1:-}
+  [ -n "$res" ] || die "unfreeze needs a resource"
+  check_res "$res"
+  lock "$res"
+  if [ -e "$dir/$res.frozen" ]; then
+    rm -f "$dir/$res.frozen"
+    log "unfreeze $res by=$(default_holder)"
+    echo "$prog: $res unfrozen"
+  else
+    echo "$prog: $res was not frozen"
+  fi
+  unlock
+}
+
+cmd=${1:-}
+[ $# -eq 0 ] || shift
+case $cmd in
+  acquire) cmd_acquire "$@" ;;
+  release) cmd_release "$@" ;;
+  renew) cmd_renew "$@" ;;
+  with) cmd_with "$@" ;;
+  status) cmd_status "$@" ;;
+  check) cmd_check "$@" ;;
+  holder) cmd_holder "$@" ;;
+  freeze) cmd_freeze "$@" ;;
+  unfreeze) cmd_unfreeze "$@" ;;
+  -h | --help | help) usage ;;
+  "") usage >&2; exit 2 ;;
+  *) die "unknown command '$cmd' (see --help)" ;;
+esac

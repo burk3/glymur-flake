@@ -1,0 +1,115 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 18:56:23 -0800
+Subject: [PATCH 25/27] NOT-FOR-UPSTREAM: ASoC: SDCA: power an output's PDE down before the path
+ that feeds it
+
+A Power Domain Entity is registered as a DAPM supply, and DAPM powers
+supplies down last. For a PDE that powers an output (the headphone
+amplifier behind an Output Terminal) that means the host side feeding
+the Function - the SoundWire data port and the source that drives it -
+is torn down while the amplifier is still on, and whatever the teardown
+puts on the wire is played.
+
+On the ASUS Zenbook A16 (Glymur, WCD9378 SimpleJack on SoundWire, fed
+by the LPASS RX macro) every playback stop gave one click on the
+headphones, -7.6 to -12.3 dBFS peak at the jack with the codec at 0 dB
+(single-sample impulse plus a small DC step, 10/10 stops). The DAPM
+trace shows the order: RX macro interpolators POST_PMD, RX_MCLK off,
+then PDE 47 (HPH) to PS3 over the next 30 ms, then the SoundWire stream
+is disabled.
+
+Give non-dataport Output Terminals a PRE_PMD event that takes each PDE
+feeding them to PS3 first, if DAPM is about to power that PDE down
+anyway (power set, new_power clear), so a PDE shared with a terminal
+that stays on is left alone. The PDE's own power-down then finds PS3
+already and its poll returns at once. Output terminal widgets are
+speaker type and power down before muxes, mixers and supplies, so this
+runs before the host path stops.
+
+With this the A16 gave 0 clicks above -55 dBFS in 15 stops at 0 dB
+(noise peaks of the loopback rig are about -57 dBFS; a module-parameter
+variant of the same code gave 0 in 20 more), and playback, the speakers
+and the PDE power-up were unaffected (bead rnf).
+
+Assisted-by: Claude Code (Opus 5.5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/sdca/sdca_asoc.c | 55 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+
+diff --git a/sound/soc/sdca/sdca_asoc.c b/sound/soc/sdca/sdca_asoc.c
+index 559a0fdfd98e..565ce96af6fb 100644
+--- a/sound/soc/sdca/sdca_asoc.c
++++ b/sound/soc/sdca/sdca_asoc.c
+@@ -330,6 +330,59 @@ static int entity_parse_it(struct device *dev,
+ 	return 0;
+ }
+ 
++static int entity_pde_event(struct snd_soc_dapm_widget *widget,
++			    struct snd_kcontrol *kctl, int event);
++
++/*
++ * A PDE is a DAPM supply, so DAPM powers it down last, after the rest of
++ * the path. When a PDE powers an output (an amplifier behind an Output
++ * Terminal), the host side that feeds the Function, a SoundWire data
++ * port and whatever drives it, has then already been torn down while the
++ * amplifier is still on, and anything that teardown puts on the wire is
++ * heard. Take such a PDE to PS3 when its terminal starts to power down,
++ * if DAPM is about to power the PDE down anyway; the PDE's own power-down
++ * then finds it in PS3 already.
++ */
++static int entity_ot_pde_event(struct snd_soc_dapm_widget *widget,
++			       struct snd_kcontrol *kctl, int event)
++{
++	struct snd_soc_component *component = snd_soc_dapm_to_component(widget->dapm);
++	struct snd_soc_dapm_path *path;
++
++	if (!component || event != SND_SOC_DAPM_PRE_PMD)
++		return 0;
++
++	snd_soc_dapm_widget_for_each_source_path(widget, path) {
++		struct snd_soc_dapm_widget *pde = path->source;
++		struct sdca_entity *entity = pde->priv;
++		unsigned int val;
++		int ret;
++
++		if (pde->event != entity_pde_event || !pde->power || pde->new_power)
++			continue;
++
++		ret = regmap_read(component->regmap, pde->reg, &val);
++		if (ret || val == pde->off_val)
++			continue;
++
++		ret = regmap_write(component->regmap, pde->reg, pde->off_val);
++		if (ret)
++			continue;
++
++		ret = sdca_asoc_pde_poll_actual_ps(component->regmap,
++						   SDW_SDCA_CTL_FUNC(pde->reg),
++						   SDW_SDCA_CTL_ENT(pde->reg),
++						   pde->on_val, pde->off_val,
++						   entity->pde.max_delay,
++						   entity->pde.num_max_delay);
++		if (ret)
++			dev_warn(component->dev, "%s: early power down of %s failed: %d\n",
++				 widget->name, entity->label, ret);
++	}
++
++	return 0;
++}
++
+ static int entity_parse_ot(struct device *dev,
+ 			   struct sdca_function_data *function,
+ 			   struct sdca_entity *entity,
+@@ -349,6 +402,8 @@ static int entity_parse_ot(struct device *dev,
+ 		add_route(route, aif_name, NULL, entity->label);
+ 	} else {
+ 		(*widget)->id = snd_soc_dapm_spk;
++		(*widget)->event_flags = SND_SOC_DAPM_PRE_PMD;
++		(*widget)->event = entity_ot_pde_event;
+ 	}
+ 
+ 	if (entity->iot.clock)

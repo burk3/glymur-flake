@@ -1,0 +1,12 @@
+NIC statistics:
+     InPackets: 52012312
+     InUCast: 51760594
+     InMCast: 99752
+     InBCast: 151966
+     InErrors: 0
+     OutPackets: 57596977
+     OutUCast: 57571431
+     OutMCast: 3910
+     OutBCast: 21636
+     InUCastOctets: 72070319282
+     OutUCastOctets: 79066738455

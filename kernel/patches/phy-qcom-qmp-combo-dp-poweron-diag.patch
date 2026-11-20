@@ -1,0 +1,382 @@
+From d8e21c563fad2d756c4181312f85b5e305216a31 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Thu, 22 Oct 2026 12:00:00 +0000
+Subject: [PATCH] NOT-FOR-UPSTREAM: LAB-DIAG: phy: qcom: qmp-combo: log DP power-on waits and
+ state (diagnostic only)
+
+NOT FOR UPSTREAM. Temporary bring-up diagnostics for external DP over
+USB-C on the ASUS Zenbook A16 (Glymur), which fails every time with
+
+  phy phy-fde000.phy.3: phy poweron failed --> -110
+  [drm:msm_dp_display_atomic_enable [msm]] *ERROR* Failed link training (rc=-110)
+
+i.e. one of the readl_poll_timeout() waits in qmp_v456_configure_dp_phy()
+or qmp_v8_configure_dp_phy() expires. Nothing says which.
+
+This only adds logging, all prefixed "LAB-DIAG:"; no register writes,
+no change to return values or control flow:
+
+- Each DP power-on wait (v456: COM C_READY_STATUS bit0, CMN_STATUS bit0
+  and bit1, DP_PHY_STATUS bit0 and bit1; v4/v8: DP_PHY_STATUS bit1 after
+  the lane enable) logs which one timed out and the last value read, the
+  driver state (qmpphy_mode, orientation, lanes, link_rate, init counts,
+  usb_powered_on, clocks/regulators) and the PHY status registers.
+- On Glymur the register dump reads the COM status registers both at the
+  offsets the driver polls (qmp_v8_n3_usb43dpphy_regs_layout uses the
+  plain COM v8 C_READY_STATUS 0x2f0 / CMN_STATUS 0x2c8) and at the USB43
+  COM v8 offsets the DP serdes tables are written with (C_READY_STATUS
+  0x33c, CMN_STATUS 0x314, RESET_SM_STATUS, PLL calibration status).
+  In the USB43 COM map 0x2f0 is PSM_CAL_EN and 0x2c8 is LDO_CAL_2.
+- qmp_combo_dp_power_on() logs one dev_info line per call (ret, mode,
+  orientation, lanes, link_rate, USB side state) and, when it succeeded,
+  the same register dump at info level, so good and bad runs compare.
+- Previously ignored results (DP serdes init, the v8 link/pixel
+  clk_set_rate) are logged when they fail, and still ignored.
+- msm DP: when .atomic_enable's link preparation fails on an external
+  (non-eDP) connector, one line with the link and mode parameters.
+
+Registers are only read with the PHY's clocks and regulators on.
+
+Rebased (context only) onto Qualcomm's "Glymur PHY" v5 01-10/11, applied
+after them: the COM C_READY/CMN_STATUS waits moved into
+qmp_combo_configure_dp_phy_common() (07/11) and qmp_v8_configure_dp_phy()
+gained DP_PHY_STATUS bit0 and CMN_STATUS waits of its own (10/11); each
+wait logs as before, and the helpers now sit before the common sequence.
+Same logging; still no register writes or control-flow changes.
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/gpu/drm/msm/dp/dp_display.c       |   8 +
+ drivers/phy/qualcomm/phy-qcom-qmp-combo.c | 204 ++++++++++++++++++++--
+ 2 files changed, 202 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/dp/dp_display.c b/drivers/gpu/drm/msm/dp/dp_display.c
+index 7fcfd138bef1..ae950e9bd934 100644
+--- a/drivers/gpu/drm/msm/dp/dp_display.c
++++ b/drivers/gpu/drm/msm/dp/dp_display.c
+@@ -1629,6 +1629,14 @@ void msm_dp_display_atomic_enable(struct msm_dp *msm_dp_display,
+ 	rc = msm_dp_display_prepare_link(dp);
+ 	if (rc) {
+ 		drm_dbg_dp(dp->drm_dev, "DP display prepare failed, rc=%d\n", rc);
++		/* LAB-DIAG (snap2xee bring-up, temporary): logging only. */
++		if (!msm_dp_display->is_edp)
++			DRM_ERROR("LAB-DIAG: external DP enable failed rc=%d: sink_count=%d link %u lanes @ %u kHz, mode %d kHz @ %u bpp (see the combo PHY's LAB-DIAG lines above)\n",
++				  rc, dp->link->sink_count,
++				  dp->link->link_params.num_lanes,
++				  dp->link->link_params.rate,
++				  dp->panel->msm_dp_mode.drm_mode.clock,
++				  dp->panel->msm_dp_mode.bpp);
+ 		msm_dp_display_report_enable_failure(dp);
+ 		return;
+ 	}
+diff --git a/drivers/phy/qualcomm/phy-qcom-qmp-combo.c b/drivers/phy/qualcomm/phy-qcom-qmp-combo.c
+index 88fee4a82eaa..eb201581ca43 100644
+--- a/drivers/phy/qualcomm/phy-qcom-qmp-combo.c
++++ b/drivers/phy/qualcomm/phy-qcom-qmp-combo.c
+@@ -3844,6 +3844,151 @@ static void qmp_v4_dp_aux_init(struct qmp_combo *qmp)
+ 	       qmp->dp_dp_phy + QSERDES_V4_DP_PHY_AUX_INTERRUPT_MASK);
+ }
+ 
++/*
++ * LAB-DIAG (snap2xee bring-up, temporary, logging only): external DP over
++ * USB-C on Glymur fails with "phy poweron failed --> -110" in
++ * qmp_v456_configure_dp_phy(). Log which wait timed out, the PHY status
++ * registers and the driver state; and one line per DP power-on so that good
++ * and bad runs can be compared. No register is written here.
++ */
++static const char *qmp_lab_diag_mode(enum qmpphy_mode mode)
++{
++	switch (mode) {
++	case QMPPHY_MODE_USB3DP:
++		return "usb3dp";
++	case QMPPHY_MODE_DP_ONLY:
++		return "dp-only";
++	case QMPPHY_MODE_USB3_ONLY:
++		return "usb3-only";
++	}
++	return "?";
++}
++
++static const char *qmp_lab_diag_orientation(enum typec_orientation o)
++{
++	switch (o) {
++	case TYPEC_ORIENTATION_NONE:
++		return "none";
++	case TYPEC_ORIENTATION_NORMAL:
++		return "normal";
++	case TYPEC_ORIENTATION_REVERSE:
++		return "reverse";
++	}
++	return "?";
++}
++
++#define qmp_lab_diag_log(qmp, err, fmt, ...)					\
++	do {									\
++		if (err)							\
++			dev_err((qmp)->dev, "LAB-DIAG: " fmt, ##__VA_ARGS__);	\
++		else								\
++			dev_info((qmp)->dev, "LAB-DIAG: " fmt, ##__VA_ARGS__);	\
++	} while (0)
++
++static void qmp_lab_diag_state(struct qmp_combo *qmp, bool err)
++{
++	/* k74 trial: 0063's resource flags are not on this branch */
++	qmp_lab_diag_log(qmp, err,
++		"dp state: mode=%s orientation=%s lanes=%u link_rate=%u init_count=%d usb_init_count=%u phy_mode=%d dp_init_count=%u dp_powered_on=%d\n",
++		qmp_lab_diag_mode(qmp->qmpphy_mode),
++		qmp_lab_diag_orientation(qmp->orientation),
++		qmp->dp_opts.lanes, qmp->dp_opts.link_rate,
++		qmp->init_count, qmp->usb_init_count,
++		qmp->phy_mode, qmp->dp_init_count,
++		qmp->dp_powered_on);
++}
++
++static void qmp_lab_diag_regs(struct qmp_combo *qmp, bool err)
++{
++	const struct qmp_phy_cfg *cfg = qmp->cfg;
++	void __iomem *serdes = qmp->dp_serdes;
++	void __iomem *dp_phy = qmp->dp_dp_phy;
++	void __iomem *com = qmp->com;
++
++	/* Unclocked/unpowered register reads can hang the bus: don't. */
++	/* init_count > 0: com_init has the clocks and regulators on */
++	if (!qmp->init_count) {
++		qmp_lab_diag_log(qmp, err, "dp regs: not read (clocks/vregs off)\n");
++		return;
++	}
++
++	/* What the driver polls, at the offsets its register layout gives. */
++	qmp_lab_diag_log(qmp, err,
++		"dp serdes (layout) C_READY_STATUS[0x%03x]=0x%08x CMN_STATUS[0x%03x]=0x%08x RESETSM_CNTRL[0x%03x]=0x%08x\n",
++		cfg->regs[QPHY_COM_C_READY_STATUS],
++		readl(serdes + cfg->regs[QPHY_COM_C_READY_STATUS]),
++		cfg->regs[QPHY_COM_CMN_STATUS],
++		readl(serdes + cfg->regs[QPHY_COM_CMN_STATUS]),
++		cfg->regs[QPHY_COM_RESETSM_CNTRL],
++		readl(serdes + cfg->regs[QPHY_COM_RESETSM_CNTRL]));
++
++	/*
++	 * Glymur: the DP serdes tables are written with the USB43 COM v8
++	 * offsets, whose status registers are not where the layout above
++	 * points (it uses the plain COM v8 offsets). Read both.
++	 */
++	if (cfg->regs == qmp_v8_n3_usb43dpphy_regs_layout) {
++		qmp_lab_diag_log(qmp, err,
++			"dp serdes (usb43 v8) C_READY_STATUS[0x33c]=0x%08x CMN_STATUS[0x314]=0x%08x RESET_SM_STATUS[0x318]=0x%08x MODE_OPERATION_STATUS[0x30c]=0x%08x SYSCLK_DET_COMP_STATUS[0x310]=0x%08x\n",
++			readl(serdes + QSERDES_V8_USB43_COM_C_READY_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_CMN_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_RESET_SM_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_MODE_OPERATION_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_SYSCLK_DET_COMP_STATUS));
++		qmp_lab_diag_log(qmp, err,
++			"dp serdes (usb43 v8) PLLCAL_CODE1_STATUS=0x%08x PLLCAL_CODE2_STATUS=0x%08x IVCO_CAL_CODE_STATUS=0x%08x PLL_LDO_CAL_STATUS_2=0x%08x PLL_LDO_CAL_STATUS_3=0x%08x RESTRIM_CODE_STATUS=0x%08x INTEGLOOP_BINCODE_STATUS=0x%08x\n",
++			readl(serdes + QSERDES_V8_USB43_COM_PLLCAL_CODE1_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_PLLCAL_CODE2_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_IVCO_CAL_CODE_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_PLL_LDO_CAL_STATUS_2),
++			readl(serdes + QSERDES_V8_USB43_COM_PLL_LDO_CAL_STATUS_3),
++			readl(serdes + QSERDES_V8_USB43_COM_RESTRIM_CODE_STATUS),
++			readl(serdes + QSERDES_V8_USB43_COM_INTEGLOOP_BINCODE_STATUS));
++		qmp_lab_diag_log(qmp, err,
++			"dp serdes (usb43 v8) cfg: HSCLK_SEL_1=0x%02x IP_CTRL_AND_DP_SEL=0x%02x BIAS_EN_CLKBUFLR_EN=0x%02x CLK_ENABLE1=0x%02x SYSCLK_EN_SEL=0x%02x PSM_CAL_EN[0x2f0]=0x%02x LDO_CAL_2[0x2c8]=0x%02x CMN_MODE=0x%02x\n",
++			readl(serdes + QSERDES_V8_USB43_COM_HSCLK_SEL_1),
++			readl(serdes + QSERDES_V8_USB43_COM_IP_CTRL_AND_DP_SEL),
++			readl(serdes + QSERDES_V8_USB43_COM_BIAS_EN_CLKBUFLR_EN),
++			readl(serdes + QSERDES_V8_USB43_COM_CLK_ENABLE1),
++			readl(serdes + QSERDES_V8_USB43_COM_SYSCLK_EN_SEL),
++			readl(serdes + QSERDES_V8_USB43_COM_PSM_CAL_EN),
++			readl(serdes + QSERDES_V8_USB43_COM_LDO_CAL_2),
++			readl(serdes + QSERDES_V8_USB43_COM_CMN_MODE));
++	}
++
++	qmp_lab_diag_log(qmp, err,
++		"dp_phy STATUS[0x%03x]=0x%08x CFG=0x%02x CFG_1=0x%02x PD_CTL=0x%02x MODE=0x%02x VCO_DIV=0x%02x\n",
++		cfg->regs[QPHY_DP_PHY_STATUS],
++		readl(dp_phy + cfg->regs[QPHY_DP_PHY_STATUS]),
++		readl(dp_phy + QSERDES_DP_PHY_CFG),
++		readl(dp_phy + QSERDES_DP_PHY_CFG_1),
++		readl(dp_phy + QSERDES_DP_PHY_PD_CTL),
++		readl(dp_phy + QSERDES_DP_PHY_MODE),
++		cfg->regs[QPHY_DP_PHY_VCO_DIV] ?
++			readl(dp_phy + cfg->regs[QPHY_DP_PHY_VCO_DIV]) : 0);
++
++	qmp_lab_diag_log(qmp, err,
++		"dp com PHY_MODE_CTRL=0x%02x SW_RESET=0x%02x POWER_DOWN_CTRL=0x%02x SWI_CTRL=0x%02x TYPEC_CTRL=0x%02x RESET_OVRD_CTRL=0x%02x usb PCS_STATUS=0x%08x\n",
++		readl(com + QPHY_V3_DP_COM_PHY_MODE_CTRL),
++		readl(com + QPHY_V3_DP_COM_SW_RESET),
++		readl(com + QPHY_V3_DP_COM_POWER_DOWN_CTRL),
++		readl(com + QPHY_V3_DP_COM_SWI_CTRL),
++		readl(com + QPHY_V3_DP_COM_TYPEC_CTRL),
++		readl(com + QPHY_V3_DP_COM_RESET_OVRD_CTRL),
++		readl(qmp->pcs + cfg->regs[QPHY_PCS_STATUS]));
++}
++
++static void qmp_lab_diag_timeout(struct qmp_combo *qmp, const char *what,
++				 u32 last)
++{
++	dev_err(qmp->dev,
++		"LAB-DIAG: dp power-on: wait for %s timed out (last read 0x%08x)\n",
++		what, last);
++	qmp_lab_diag_state(qmp, true);
++	qmp_lab_diag_regs(qmp, true);
++}
++
++
+ static int qmp_combo_configure_dp_phy_common(struct qmp_combo *qmp)
+ {
+ 	const struct qmp_phy_cfg *cfg = qmp->cfg;
+@@ -3866,8 +4011,11 @@ static int qmp_combo_configure_dp_phy_common(struct qmp_combo *qmp)
+ 	writel(0x05, qmp->dp_dp_phy + QSERDES_V4_DP_PHY_TX2_TX3_LANE_CTL);
+ 
+ 	ret = qmp->cfg->configure_dp_clocks(qmp);
+-	if (ret)
++	if (ret) {
++		dev_err(qmp->dev, "LAB-DIAG: dp power-on: configure_dp_clocks failed: %d (link_rate %u)\n",
++			ret, qmp->dp_opts.link_rate);
+ 		return ret;
++	}
+ 
+ 	writel(0x01, qmp->dp_dp_phy + QSERDES_DP_PHY_CFG);
+ 	writel(0x05, qmp->dp_dp_phy + QSERDES_DP_PHY_CFG);
+@@ -3881,22 +4029,28 @@ static int qmp_combo_configure_dp_phy_common(struct qmp_combo *qmp)
+ 			((status & BIT(0)) > 0),
+ 			500,
+ 			10000);
+-	if (ret)
++	if (ret) {
++		qmp_lab_diag_timeout(qmp, "common: COM C_READY_STATUS bit0 (serdes ready)", status);
+ 		return ret;
++	}
+ 
+ 	ret = readl_poll_timeout(qmp->dp_serdes + cfg->regs[QPHY_COM_CMN_STATUS],
+ 			status,
+ 			((status & BIT(0)) > 0),
+ 			500,
+ 			10000);
+-	if (ret)
++	if (ret) {
++		qmp_lab_diag_timeout(qmp, "common: COM CMN_STATUS bit0 (PLL lock)", status);
+ 		return ret;
++	}
+ 
+ 	ret = readl_poll_timeout(qmp->dp_serdes + cfg->regs[QPHY_COM_CMN_STATUS],
+ 			status,
+ 			((status & BIT(1)) > 0),
+ 			500,
+ 			10000);
++	if (ret)
++		qmp_lab_diag_timeout(qmp, "common: COM CMN_STATUS bit1 (PHY ready)", status);
+ 	return ret;
+ }
+ 
+@@ -3954,6 +4108,7 @@ static int qmp_v8_configure_dp_clocks(struct qmp_combo *qmp)
+ 	unsigned int v_level = 0, p_level = 0;
+ 	u8 ln_drv_lvl;
+ 	int i;
++	int ret;
+ 
+ 	for (i = 0; i < dp_opts->lanes; i++) {
+ 		v_level = max(v_level, dp_opts->voltage[i]);
+@@ -4010,8 +4165,14 @@ static int qmp_v8_configure_dp_clocks(struct qmp_combo *qmp)
+ 	writel(ln_drv_lvl, qmp->dp_dp_phy + QSERDES_V8_DP_PHY_LN0_DRV_LVL);
+ 	writel(ln_drv_lvl, qmp->dp_dp_phy + QSERDES_V8_DP_PHY_LN1_DRV_LVL);
+ 
+-	clk_set_rate(qmp->dp_link_hw.clk, dp_opts->link_rate * 100000);
+-	clk_set_rate(qmp->dp_pixel_hw.clk, pixel_freq);
++	ret = clk_set_rate(qmp->dp_link_hw.clk, dp_opts->link_rate * 100000);
++	if (ret)
++		dev_err(qmp->dev, "LAB-DIAG: dp link clk_set_rate(%u) failed: %d\n",
++			dp_opts->link_rate * 100000, ret);
++	ret = clk_set_rate(qmp->dp_pixel_hw.clk, pixel_freq);
++	if (ret)
++		dev_err(qmp->dev, "LAB-DIAG: dp pixel clk_set_rate(%lu) failed: %d\n",
++			pixel_freq, ret);
+ 
+ 	return 0;
+ }
+@@ -4032,15 +4193,19 @@ static int qmp_v456_configure_dp_phy(struct qmp_combo *qmp)
+ 			status,
+ 			((status & BIT(0)) > 0),
+ 			500,
+-			10000))
++			10000)) {
++		qmp_lab_diag_timeout(qmp, "v456: DP_PHY_STATUS bit0", status);
+ 		return -ETIMEDOUT;
++	}
+ 
+ 	if (readl_poll_timeout(qmp->dp_dp_phy + cfg->regs[QPHY_DP_PHY_STATUS],
+ 			status,
+ 			((status & BIT(1)) > 0),
+ 			500,
+-			10000))
++			10000)) {
++		qmp_lab_diag_timeout(qmp, "v456: DP_PHY_STATUS bit1", status);
+ 		return -ETIMEDOUT;
++	}
+ 
+ 	return 0;
+ }
+@@ -4093,8 +4258,10 @@ static int qmp_v4_configure_dp_phy(struct qmp_combo *qmp)
+ 			status,
+ 			((status & BIT(1)) > 0),
+ 			500,
+-			10000))
++			10000)) {
++		qmp_lab_diag_timeout(qmp, "v4: DP_PHY_STATUS bit1 (after lane enable)", status);
+ 		return -ETIMEDOUT;
++	}
+ 
+ 	writel(0x0a, qmp->dp_tx + cfg->regs[QPHY_TX_TX_POL_INV]);
+ 	writel(0x0a, qmp->dp_tx2 + cfg->regs[QPHY_TX_TX_POL_INV]);
+@@ -4164,8 +4331,10 @@ static int qmp_v8_configure_dp_phy(struct qmp_combo *qmp)
+ 			((status & BIT(0)) > 0),
+ 			500,
+ 			10000);
+-	if (ret)
++	if (ret) {
++		qmp_lab_diag_timeout(qmp, "v8: DP_PHY_STATUS bit0 (after CFG 0x09)", status);
+ 		return ret;
++	}
+ 
+ 
+ 	ret = readl_poll_timeout(qmp->dp_serdes + cfg->regs[QPHY_COM_CMN_STATUS],
+@@ -4174,6 +4343,9 @@ static int qmp_v8_configure_dp_phy(struct qmp_combo *qmp)
+ 			500,
+ 			10000);
+ 
++	if (ret)
++		qmp_lab_diag_timeout(qmp, "v8: COM CMN_STATUS bit0 (PLL lock, v6 single poll)", status);
++
+ 	return ret;
+ }
+ 
+@@ -4421,7 +4593,10 @@ static int qmp_combo_dp_power_on(struct phy *phy)
+ 
+ 	mutex_lock(&qmp->phy_mutex);
+ 
+-	qmp_combo_dp_serdes_init(qmp);
++	ret = qmp_combo_dp_serdes_init(qmp);
++	if (ret)
++		dev_err(qmp->dev, "LAB-DIAG: dp power-on: serdes_init failed: %d (link_rate %u; ignored as before)\n",
++			ret, qmp->dp_opts.link_rate);
+ 
+ 	qmp_configure_lane(qmp->dev, tx, cfg->dp_tx_tbl, cfg->dp_tx_tbl_num, 1);
+ 	qmp_configure_lane(qmp->dev, tx2, cfg->dp_tx_tbl, cfg->dp_tx_tbl_num, 2);
+@@ -4440,6 +4615,15 @@ static int qmp_combo_dp_power_on(struct phy *phy)
+ 	qmp->dp_powered_on = true;
+ 
+ out_unlock:
++	/* LAB-DIAG: one line per DP power-on, good or bad. */
++	dev_info(qmp->dev,
++		 "LAB-DIAG: dp power-on: ret=%d mode=%s orientation=%s lanes=%u link_rate=%u usb_init_count=%u\n",
++		 ret, qmp_lab_diag_mode(qmp->qmpphy_mode),
++		 qmp_lab_diag_orientation(qmp->orientation),
++		 qmp->dp_opts.lanes, qmp->dp_opts.link_rate,
++		 qmp->usb_init_count);
++	if (!ret)
++		qmp_lab_diag_regs(qmp, false);
+ 	mutex_unlock(&qmp->phy_mutex);
+ 
+ 	return ret;

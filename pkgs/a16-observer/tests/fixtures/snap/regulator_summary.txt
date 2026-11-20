@@ -1,0 +1,60 @@
+ regulator                      use open bypass  opmode voltage current     min     max
+---------------------------------------------------------------------------------------
+ regulator-dummy                 24   45      0 unknown     0mV     0mA     0mV     0mV 
+    3d00000.gpu-vddcx             0                                 0mA     0mV     0mV
+    3d00000.gpu-vdd               0                                 0mA     0mV     0mV
+    1bf0000.pcie-vddpe-3v3        1                                 0mA     0mV     0mV
+    1bf0000.pcie-vdda             1                                 0mA     0mV     0mV
+    wcn7850-pmu-vddio1p2          1                                 0mA     0mV     0mV
+    1b40000.pcie-vdda             1                                 0mA     0mV     0mV
+    0-0015-vddl                   1                                 0mA     0mV     0mV
+    0-0015-vdd                    1                                 0mA     0mV     0mV
+    10-0017-vddl                  1                                 0mA     0mV     0mV
+    10-0017-vdd                   1                                 0mA     0mV     0mV
+    19-0015-vddl                  1                                 0mA     0mV     0mV
+    19-0015-vdd                   1                                 0mA     0mV     0mV
+    vreg_l1b_e0                   0    1      0 standby  1800mV     0mA  1800mV  1800mV 
+       7660000.codec-vdd-micb     0                                 0mA     0mV     0mV
+    vreg_l1c_e0                   1    1      0 standby   936mV     0mA   936mV   936mV 
+       fde000.phy-vdda-phy        1                                21mA     0mV     0mV
+    vreg_l1f_e1                  10   24      0    fast   904mV     0mA   904mV   904mV 
+       acec000.phy-vdda-0p9       0                                 0mA     0mV     0mV
+       ace4000.phy-vdda-0p9       0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qreftx1-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-refgen4-0p9   0                                 0mA     0mV     0mV
+    vreg_l1c_e1                   1    1      0 standby   912mV     0mA   912mV   912mV 
+       1bf6000.phy-vdda-phy       1                                 0mA     0mV     0mV
+    vreg_s7f_e0                   0    0      0    fast  1200mV     0mA  1200mV  1200mV 
+    vreg_l2c_e0                  13   19      0    fast   880mV     0mA   880mV   880mV 
+       fa2000.phy-vdd             1                                 0mA     0mV     0mV
+       fa1000.phy-vdd             1                                 0mA     0mV     0mV
+       fa5000.phy-vdda-phy        1                                21mA     0mV     0mV
+       fa3000.phy-vdda-phy        1                                21mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrx4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrpt4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrpt3-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrx4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrpt4-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrpt3-0p9   1                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrx4-0p9   0                                 0mA     0mV     0mV
+       1fd5000.clock-controller-vdda-qrefrpt4-0p9   0                                 0mA     0mV     0mV

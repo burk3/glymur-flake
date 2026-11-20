@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 09:06:40 -0800
+Subject: [PATCH] NOT-FOR-UPSTREAM: ASoC: qcom: q6apm-dai: report periods from a work item
+
+The q6apm PCMs are nonatomic, so snd_pcm_period_elapsed() takes the
+stream mutex. q6apm-dai calls it straight from the GPR event callback,
+which also delivers the DSP's replies to synchronous commands. Triggers
+run with the stream mutex held, and the SUSPEND/RESUME triggers wait for
+the DSP (q6apm_graph_stop()/q6apm_graph_start(), and the back-end port
+in q6apm-lpass-dais). A data event that arrives while such a trigger
+waits blocks the callback path on the mutex, the reply queues up behind
+it, and the trigger gives up after its 5 s timeout:
+
+  qcom-apm gprsvc:service:2:1: CMD timeout for [1001003] opcode
+
+On the ASUS Zenbook A16 this hits every system suspend with a playback
+stream running (aplay held on the speaker or the headphone PCM): the
+graph stop waits 5.05-5.37 s and fails, the graph is left running
+through s2idle, and on resume it is never restarted ("not suspended").
+
+Report periods from a work item instead, so the event path never sleeps
+on the stream mutex. The work is flushed in close() after the graph is
+closed, when no more events can arrive.
+
+With this, the front-end graph stops in about 0.5 ms on suspend and
+starts again in about 1 ms on resume (8 s2idle cycles, headphone stream
+held).
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/qcom/qdsp6/q6apm-dai.c | 27 +++++++++++++++++++++++----
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6apm-dai.c b/sound/soc/qcom/qdsp6/q6apm-dai.c
+index 80bcf11f9f5c..6c58d71fae5c 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6apm-dai.c
+@@ -14,6 +14,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+ #include <linux/spinlock.h>
++#include <linux/workqueue.h>
+ #include <sound/pcm.h>
+ #include <sound/pcm_params.h>
+ #include <sound/soc.h>
+@@ -97,6 +98,7 @@ struct q6apm_dai_rtd {
+ 	spinlock_t lock;
+ 	bool notify_on_drain;
+ 	bool graph_suspended;
++	struct work_struct period_work;
+ };
+ 
+ struct q6apm_dai_data {
+@@ -237,24 +239,38 @@ static const struct snd_pcm_hardware q6apm_dai_hardware_playback = {
+ 	.fifo_size =            0,
+ };
+ 
++static void q6apm_dai_period_work(struct work_struct *work)
++{
++	struct q6apm_dai_rtd *prtd = container_of(work, struct q6apm_dai_rtd,
++						  period_work);
++
++	snd_pcm_period_elapsed(prtd->substream);
++}
++
+ static void event_handler(uint32_t opcode, uint32_t token, void *payload, void *priv)
+ {
+ 	struct q6apm_dai_rtd *prtd = priv;
+-	struct snd_pcm_substream *substream = prtd->substream;
+ 
++	/*
++	 * The PCMs are nonatomic, so snd_pcm_period_elapsed() sleeps on the
++	 * stream mutex. Triggers run under that mutex and some of them wait
++	 * for the DSP (q6apm_graph_start/stop()), whose replies arrive along
++	 * the same GPR path as these events: report periods from a work item
++	 * so an event never holds up the reply a trigger is waiting for.
++	 */
+ 	switch (opcode) {
+ 	case APM_CLIENT_EVENT_WATERMARK_EVENT:
+-		snd_pcm_period_elapsed(substream);
++		queue_work(system_highpri_wq, &prtd->period_work);
+ 		break;
+ 	case APM_CLIENT_EVENT_CMD_EOS_DONE:
+ 		prtd->state = Q6APM_STREAM_STOPPED;
+ 		break;
+ 	case APM_CLIENT_EVENT_DATA_WRITE_DONE:
+-		snd_pcm_period_elapsed(substream);
++		queue_work(system_highpri_wq, &prtd->period_work);
+ 
+ 		break;
+ 	case APM_CLIENT_EVENT_DATA_READ_DONE:
+-		snd_pcm_period_elapsed(substream);
++		queue_work(system_highpri_wq, &prtd->period_work);
+ 		if (prtd->state == Q6APM_STREAM_RUNNING)
+ 			q6apm_read(prtd->graph);
+ 
+@@ -514,6 +530,7 @@ static int q6apm_dai_open(struct snd_soc_component *component,
+ 		return -ENOMEM;
+ 
+ 	spin_lock_init(&prtd->lock);
++	INIT_WORK(&prtd->period_work, q6apm_dai_period_work);
+ 	prtd->substream = substream;
+ 	prtd->graph = q6apm_graph_open(dev, event_handler, prtd, graph_id, substream->stream);
+ 	if (IS_ERR(prtd->graph)) {
+@@ -598,6 +615,8 @@ static int q6apm_dai_close(struct snd_soc_component *component,
+ 
+ 	q6apm_graph_close(prtd->graph);
+ 	prtd->graph = NULL;
++	/* No events after the graph is closed; finish a pending period. */
++	cancel_work_sync(&prtd->period_work);
+ 	kfree(prtd);
+ 	runtime->private_data = NULL;
+ 

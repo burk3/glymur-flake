@@ -1,0 +1,52 @@
+From 75a3aa2a5cd330de25fa23cd7b23558641c686f4 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 01:35:00 -0700
+Subject: [PATCH 03/11] NOT-FOR-UPSTREAM: ASoC: soc-core: leave trigger-muted DAIs muted on
+ system resume
+
+soc_resume_deferred() unmutes every active playback DAI. For a DAI with
+mute_unmute_on_trigger that is too early: the PCM is still suspended
+until user space resumes or restarts it, and the RESUME or START trigger
+unmutes the DAI then anyway (snd_soc_pcm_dai_trigger()).
+
+On the ASUS Zenbook A16 (Glymur, four WSA8845 on two SoundWire buses)
+the WSA884x mute_stream() sets GLOBAL_PA_EN, so every s2idle resume with
+the speaker PCM open turned the amplifiers on about two seconds before
+the stream ran again, while the SoundWire buses were still coming out of
+clock stop: an audible burst on each resume, recorded with an external
+microphone. With the PCM closed there was none.
+
+Skip the unmute for such DAIs; the suspend-time mute is unchanged.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/soc-core.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/soc-core.c b/sound/soc/soc-core.c
+index b9c70268d49f..925fbf795bc6 100644
+--- a/sound/soc/soc-core.c
++++ b/sound/soc/soc-core.c
+@@ -631,8 +631,17 @@ static void soc_playback_digital_mute(struct snd_soc_card *card, int mute)
+ 			continue;
+ 
+ 		for_each_rtd_dais(rtd, i, dai) {
+-			if (snd_soc_dai_stream_active(dai, playback))
+-				snd_soc_dai_digital_mute(dai, mute, playback);
++			if (!snd_soc_dai_stream_active(dai, playback))
++				continue;
++			/*
++			 * A DAI that is unmuted at trigger time gets unmuted
++			 * by the RESUME or START trigger, once the stream
++			 * runs again. Unmuting it here, while the stream is
++			 * still suspended, turns the output on with no data.
++			 */
++			if (!mute && snd_soc_dai_mute_is_ctrled_at_trigger(dai))
++				continue;
++			snd_soc_dai_digital_mute(dai, mute, playback);
+ 		}
+ 	}
+ }

@@ -1,0 +1,145 @@
+From 794db2b4928a6b4629c8e52637a6e6a873ef93de Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 08:33:42 -0700
+Subject: [PATCH 07/11] NOT-FOR-UPSTREAM: soundwire: qcom: recover the bus while a stream is open
+ but not running
+
+The deferred clash recovery returned early while any controller DAI was
+open (active_streams), and ran only when the last one closed. A sound
+server that keeps the speaker PCM open (WirePlumber with
+session.suspend-timeout-seconds = 0) never closes it, so on the ASUS
+Zenbook A16 a bus clash on s2idle resume left both WSA8845 of that bus
+UNATTACHED or in ALERT for minutes: 0 recoveries in 71 stream-held
+resumes, 19 of them with a clash, until the PCM closed.
+
+What a controller reset breaks is a stream whose ports are programmed:
+PREPARED or ENABLED. An open stream that is only CONFIGURED, or one that
+was DISABLED (for system suspend), is programmed again by the next
+sdw_prepare_stream(). Gate the recovery on that instead of on open DAIs,
+and let shutdown run a pending recovery whatever else is open.
+
+Two things this exposes:
+- After the reset the controller restarts in bank 0 while
+  bus->params.curr_bank may still say 1; take the bank from
+  SWRM_MCP_STATUS, as probe does, so the next bank switch is computed
+  from the hardware's bank.
+- qcom_swrm_reprobe_unattached_slaves() reprobed every peripheral without
+  a device number. For a codec that is bound, device_reprobe() unbinds
+  it, which removes its ASoC component and tears down the sound card.
+  Reprobe only peripherals whose driver never bound, the deferred-probe
+  case the helper was written for.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 53 ++++++++++++++++++++++++++++++++++------
+ 1 file changed, 46 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 0383bffe44b1..506a551eb84d 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -209,7 +209,6 @@ struct qcom_swrm_ctrl {
+ 	struct work_struct recovery_work;
+ 	atomic_t recovery_pending;
+ 	wait_queue_head_t slaves_wait;
+-	unsigned int active_streams;
+ 	bool recovery_failed;
+ 	bool recovery_ready;
+ 	/* Set across system sleep; recovery must not run (recovery_lock). */
+@@ -768,6 +767,43 @@ static bool qcom_swrm_all_slaves_online(struct qcom_swrm_ctrl *ctrl)
+ 	return online;
+ }
+ 
++/*
++ * True while a stream on this bus has its ports programmed and possibly
++ * enabled (PREPARED or ENABLED). A controller reset under such a stream
++ * would drop its port setup while audio still flows. An open stream that
++ * is only CONFIGURED, or DISABLED (and so re-programmed by the next
++ * sdw_prepare_stream()), does not block recovery.
++ */
++static bool qcom_swrm_stream_running(struct qcom_swrm_ctrl *ctrl)
++{
++	struct sdw_master_runtime *m_rt;
++	bool running = false;
++
++	mutex_lock(&ctrl->bus.bus_lock);
++	list_for_each_entry(m_rt, &ctrl->bus.m_rt_list, bus_node) {
++		if (m_rt->stream->state == SDW_STREAM_PREPARED ||
++		    m_rt->stream->state == SDW_STREAM_ENABLED) {
++			running = true;
++			break;
++		}
++	}
++	mutex_unlock(&ctrl->bus.bus_lock);
++
++	return running;
++}
++
++/* After a controller reset, follow the bank the hardware restarted in. */
++static void qcom_swrm_sync_bank(struct qcom_swrm_ctrl *ctrl)
++{
++	u32 val;
++
++	ctrl->reg_read(ctrl, SWRM_MCP_STATUS, &val);
++	mutex_lock(&ctrl->bus.bus_lock);
++	ctrl->bus.params.curr_bank = val & SWRM_MCP_STATUS_BANK_NUM_MASK;
++	ctrl->bus.params.next_bank = !ctrl->bus.params.curr_bank;
++	mutex_unlock(&ctrl->bus.bus_lock);
++}
++
+ static void qcom_swrm_recover_work(struct work_struct *work)
+ {
+ 	struct qcom_swrm_ctrl *ctrl =
+@@ -779,7 +815,7 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ 	mutex_lock(&qcom_swrm_probe_recovery_lock);
+ 	mutex_lock(&ctrl->recovery_lock);
+ 	if (!READ_ONCE(ctrl->recovery_ready) || ctrl->system_suspended ||
+-	    ctrl->active_streams)
++	    qcom_swrm_stream_running(ctrl))
+ 		goto unlock;
+ 
+ 	generation = atomic_read(&ctrl->recovery_pending);
+@@ -809,6 +845,7 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ 	ret = qcom_swrm_init(ctrl);
+ 	if (ret)
+ 		goto recovery_failed;
++	qcom_swrm_sync_bank(ctrl);
+ 	time_left = wait_for_completion_timeout(&ctrl->enumeration,
+ 					     msecs_to_jiffies(TIMEOUT_MS));
+ 	if (!time_left)
+@@ -1643,7 +1680,6 @@ static int qcom_swrm_startup(struct snd_pcm_substream *substream,
+ 		goto retry;
+ 	}
+ 
+-	ctrl->active_streams++;
+ 	ret = 0;
+ unlock:
+ 	mutex_unlock(&ctrl->recovery_lock);
+@@ -1660,10 +1696,7 @@ static void qcom_swrm_shutdown(struct snd_pcm_substream *substream,
+ 	swrm_wait_for_wr_fifo_done(ctrl);
+ 	pm_runtime_mark_last_busy(ctrl->dev);
+ 	pm_runtime_put_autosuspend(ctrl->dev);
+-	if (ctrl->active_streams)
+-		ctrl->active_streams--;
+-	recover = !ctrl->active_streams &&
+-		  atomic_read(&ctrl->recovery_pending);
++	recover = atomic_read(&ctrl->recovery_pending);
+ 	mutex_unlock(&ctrl->recovery_lock);
+ 
+ 	if (recover)
+@@ -1876,6 +1909,12 @@ static void qcom_swrm_reprobe_unattached_slaves(struct qcom_swrm_ctrl *ctrl)
+ 
+ 		if (slave->dev_num)
+ 			continue;
++		/*
++		 * Only a codec that never bound: unbinding a bound one
++		 * removes its ASoC component and tears down the card.
++		 */
++		if (slave->dev.driver)
++			continue;
+ 		ret = device_reprobe(&slave->dev);
+ 		if (of_machine_is_compatible("asus,zenbook-a16-ux3607oa"))
+ 			dev_info(&slave->dev,

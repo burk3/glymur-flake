@@ -1,0 +1,68 @@
+From 910b92a739b63ec1ab19f5d832a988c9f8f35a77 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Sat, 24 Oct 2026 01:30:12 -0700
+Subject: [PATCH] NOT-FOR-UPSTREAM: ASoC: qcom: x1e80100: suspend the PCMs on system suspend
+
+The x1e80100/Glymur machine driver has no dev_pm_ops, so snd_soc_suspend()
+never runs, and qcom_snd_parse_of() marks every DPCM link
+ignore_suspend, so it would skip them anyway. Open streams therefore
+keep the DSP graphs running through s2idle and LPASS keeps CX and DDR
+awake.
+
+Set snd_soc_pm_ops (as sc7180/sc7280 do) and clear ignore_suspend on
+the links, so system suspend suspends the PCMs (q6apm stops the graphs
+on SUSPEND) and DAPM powers the codecs down.
+
+On the ASUS Zenbook A16 (Glymur) with WirePlumber keeping the speaker
+PCM open, s2idle now reaches CXSD, DDR and AOSS sleep (61 of 62 s), and
+playback resumes afterwards.
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+Regenerated on v7.4-rc2 (context only, 4dd10fbbe devm conversion in
+x1e80100_platform_probe(); was fuzz 2 with patch -p1).
+
+ sound/soc/qcom/x1e80100.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/x1e80100.c b/sound/soc/qcom/x1e80100.c
+index 7eeb32ada7fa..731b94d21525 100644
+--- a/sound/soc/qcom/x1e80100.c
++++ b/sound/soc/qcom/x1e80100.c
+@@ -183,7 +183,7 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
+ 	struct snd_soc_card *card;
+ 	struct x1e80100_snd_data *data;
+ 	struct device *dev = &pdev->dev;
+-	int ret;
++	int ret, i;
+ 
+ 	card = devm_kzalloc_obj(dev, *card);
+ 	if (!card)
+@@ -202,6 +202,14 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * qcom_snd_parse_of() marks every DPCM link ignore_suspend, so system
++	 * suspend leaves the DSP graphs running and LPASS (and with it CX and
++	 * DDR) awake. Let the PCMs be suspended instead.
++	 */
++	for (i = 0; i < card->num_links; i++)
++		card->dai_link[i].ignore_suspend = 0;
++
+ 	card->driver_name = of_device_get_match_data(dev);
+ 	x1e80100_add_be_ops(card);
+ 
+@@ -220,6 +228,7 @@ static struct platform_driver snd_x1e80100_driver = {
+ 	.driver = {
+ 		.name = "snd-x1e80100",
+ 		.of_match_table = snd_x1e80100_dt_match,
++		.pm = &snd_soc_pm_ops,
+ 	},
+ };
+ module_platform_driver(snd_x1e80100_driver);
+-- 
+2.54.0
+

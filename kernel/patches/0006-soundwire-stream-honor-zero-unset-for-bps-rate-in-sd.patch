@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Fri, 25 Sep 2026 07:16:04 +0100
+Subject: [PATCH 06/22] soundwire: stream: honor "zero = unset" for bps/rate in
+ sdw_config_stream
+
+sdw_config_stream() documents that "if rate/bps is zero, it means the
+values are not set, so skip comparison and allow the value to be set
+and stored in stream", but the code has never matched that intent:
+
+  - the mismatch check only skips when the *stored* side is zero and
+    fires when the *incoming* side is zero, treating a "no opinion"
+    caller as a hard error against a non-zero stored value;
+  - the assignment overwrites stream->params.rate/bps unconditionally,
+    so a caller passing zero wipes a value another leg of the stream
+    had already contributed.
+
+Both bite legitimate use cases where the master (or a slave) knows the
+per-port BPS from a source other than the PCM container width and would
+rather not declare a stream-wide value.  For example, an SDCA slave
+hw_params() that clears sconfig.bps to defer to compute_params(), or a
+qcom SoundWire master that hardcodes sconfig.bps = 1 for PDM-flavoured
+streams, will collide with any peer that declares a non-zero container
+width from snd_sdw_params_to_config().
+
+Make the check tolerate either side being zero, and only assign into
+stream->params when the incoming value is non-zero.  The behaviour for
+non-zero-on-non-zero mismatches is unchanged.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 73723329dacc6dc1d871c129232c2df9cdd11704)
+---
+ drivers/soundwire/stream.c | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/soundwire/stream.c b/drivers/soundwire/stream.c
+index 582979cfa2b5..9da62b5af228 100644
+--- a/drivers/soundwire/stream.c
++++ b/drivers/soundwire/stream.c
+@@ -1393,21 +1393,25 @@ static int sdw_config_stream(struct device *dev,
+ 	 * If rate/bps is zero, it means the values are not set, so skip
+ 	 * comparison and allow the value to be set and stored in stream
+ 	 */
+-	if (stream->params.rate &&
++	if (stream->params.rate && stream_config->frame_rate &&
+ 	    stream->params.rate != stream_config->frame_rate) {
+-		dev_err(dev, "rate not matching, stream:%s\n", stream->name);
++		dev_err(dev, "rate not matching, stream:%s %d vs %d\n",
++			stream->name, stream->params.rate, stream_config->frame_rate);
+ 		return -EINVAL;
+ 	}
+ 
+-	if (stream->params.bps &&
++	if (stream->params.bps && stream_config->bps &&
+ 	    stream->params.bps != stream_config->bps) {
+-		dev_err(dev, "bps not matching, stream:%s %d vs %d\n", stream->name, stream->params.bps, stream_config->bps);
++		dev_err(dev, "bps not matching, stream:%s %d vs %d\n",
++			stream->name, stream->params.bps, stream_config->bps);
+ 		return -EINVAL;
+ 	}
+ 
+ 	stream->type = stream_config->type;
+-	stream->params.rate = stream_config->frame_rate;
+-	stream->params.bps = stream_config->bps;
++	if (stream_config->frame_rate)
++		stream->params.rate = stream_config->frame_rate;
++	if (stream_config->bps)
++		stream->params.bps = stream_config->bps;
+ 
+ 	/* TODO: Update this check during Device-device support */
+ 	if (is_slave)

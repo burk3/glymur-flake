@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Mon, 7 Sep 2026 09:37:23 +0100
+Subject: [PATCH 02/22] ASoC: SDCA: add
+ sdca_apply_default_control_classifiers() helper
+
+sdca_parse_function() derives is_volatile (see c7b6c6b60594) and the
+spec-defined reset value (see 02d851b46b36) from each Control's
+(entity type, selector, access mode).  Codecs that ship static SDCA
+tables via populate_function skip that path, so RW1S action Controls
+end up with is_volatile=0 and get replayed on every regcache_sync.
+
+Add sdca_apply_default_control_classifiers() to re-run those two
+classifiers over a Function.  Elevate-only, so codec-set flags win.
+Call from the tail of populate_function.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit e4c55865b72d8d15ba856b59a84bf23bb2796a70)
+---
+ include/sound/sdca_function.h   |  2 ++
+ sound/soc/sdca/sdca_functions.c | 29 +++++++++++++++++++++++++++++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/include/sound/sdca_function.h b/include/sound/sdca_function.h
+index e580201d69d5..d3d77d8bb7cd 100644
+--- a/include/sound/sdca_function.h
++++ b/include/sound/sdca_function.h
+@@ -1464,6 +1464,8 @@ static inline u32 sdca_range_search(struct sdca_control_range *range,
+ 
+ int sdca_parse_function(struct device *dev, struct sdca_function_data *function);
+ 
++void sdca_apply_default_control_classifiers(struct sdca_function_data *function);
++
+ const char *sdca_find_terminal_name(enum sdca_terminal_type type);
+ 
+ struct sdca_control *sdca_selector_find_control(struct device *dev,
+diff --git a/sound/soc/sdca/sdca_functions.c b/sound/soc/sdca/sdca_functions.c
+index 1eb6418e132d..52ce9355a22d 100644
+--- a/sound/soc/sdca/sdca_functions.c
++++ b/sound/soc/sdca/sdca_functions.c
+@@ -2266,6 +2266,35 @@ int sdca_parse_function(struct device *dev, struct sdca_function_data *function)
+ }
+ EXPORT_SYMBOL_NS(sdca_parse_function, "SND_SOC_SDCA");
+ 
++/**
++ * sdca_apply_default_control_classifiers - apply framework-known Control fields
++ * @function: Function populated via static tables (populate_function path).
++ *
++ * Runs the same per-Control classifiers as sdca_parse_function() so both
++ * entry paths land on identical @is_volatile and @has_reset/@reset fields.
++ * Elevate-only: codec-set flags/values are preserved.
++ */
++void sdca_apply_default_control_classifiers(struct sdca_function_data *function)
++{
++	int i, j;
++
++	for (i = 0; i < function->num_entities; i++) {
++		struct sdca_entity *entity = &function->entities[i];
++
++		for (j = 0; j < entity->num_controls; j++) {
++			struct sdca_control *control = &entity->controls[j];
++
++			if (!control->is_volatile)
++				control->is_volatile =
++					find_sdca_control_volatile(entity, control);
++
++			if (!control->has_reset)
++				find_sdca_control_reset(entity, control);
++		}
++	}
++}
++EXPORT_SYMBOL_NS(sdca_apply_default_control_classifiers, "SND_SOC_SDCA");
++
+ const char *sdca_find_terminal_name(enum sdca_terminal_type type)
+ {
+ 	switch (type) {

@@ -1,0 +1,17 @@
+=======================================================
+    glmark2 2023.01
+=======================================================
+    OpenGL Information
+    GL_VENDOR:      AMD
+    GL_RENDERER:    AMD Radeon 8060S Graphics (radeonsi, strix_halo, ACO, DRM 3.64, 7.2.9)
+    GL_VERSION:     OpenGL ES 3.2 Mesa 26.1.8
+    Surface Config: buf=32 r=8 g=8 b=8 a=8 depth=24 stencil=0 samples=0
+    Surface Size:   1920x1080 fullscreen
+=======================================================
+[build] duration=1: FPS: 39175 FrameTime: 0.026 ms
+[texture] duration=1: FPS: 37272 FrameTime: 0.027 ms
+[shading] duration=1:shading=phong: FPS: 35715 FrameTime: 0.028 ms
+[terrain] duration=1: FPS: 2155 FrameTime: 0.464 ms
+=======================================================
+                                  glmark2 Score: 28578 
+=======================================================

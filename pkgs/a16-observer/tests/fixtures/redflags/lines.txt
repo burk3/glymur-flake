@@ -1,0 +1,162 @@
+# Expected pattern id, a tab, one kernel log line. "-" means no red flag.
+# Lines marked "real" came from the A16 (VictoriaLogs, 2026-10-23..28);
+# the others follow the kernel's printk formats for signatures not seen yet.
+#
+# real: hed, boot da452600, 2026-10-27 23:58:43 PDT (s2idle resume)
+swr-bus-clash	qcom-soundwire 6c80000.soundwire: qcom_swrm_irq_handler: SWR bus clash detected
+wsa-parity	wsa884x-codec sdw:1:0:0217:0204:00:1: Parity error detected
+wsa-parity	wsa884x-codec sdw:1:0:0217:0204:00:0: Parity error detected
+# real: 2026-10-26/27 suspend cycling (boots b3d3b66c, 8136fb67, a561b383)
+swr-bus-clash	qcom-soundwire 6ca0000.soundwire: qcom_swrm_irq_handler: SWR bus clash detected
+wsa-parity	wsa884x-codec sdw:4:0:0217:0204:00:1: Parity error detected
+wsa-port-fail	wsa884x-codec sdw:1:0:0217:0204:00:1: Test fail for port:2
+wsa-port-fail	wsa884x-codec sdw:1:0:0217:0204:00:1: Reached MAX_RETRY on port read
+wsa-port-fail	wsa884x-codec sdw:1:0:0217:0204:00:1: Reached MAX_RETRY on alert read
+swr-port-collision	qcom-soundwire 6ca0000.soundwire: qcom_swrm_irq_handler: SWR Port collision detected
+swr-unknown-irq	qcom-soundwire 6c80000.soundwire: qcom_swrm_irq_handler: SWR unknown interrupt value: 2048
+swr-spurious-irq	qcom-soundwire 6ca0000.soundwire: no slave alert found.spurious interrupt
+# serial console form (timestamp prefix)
+swr-bus-clash	[ 8045.181370] qcom-soundwire 6c80000.soundwire: qcom_swrm_irq_handler: SWR bus clash detected
+# 99a APM wedge (from docs/audio-apm-wedge.md)
+apm-cmd-timeout	qcom-apm gprsvc:service:2:1: CMD timeout for [1001002] opcode
+apm-cmd-timeout	qcom-prm gprsvc:service:2:2: CMD timeout for [1001010] opcode
+apm-port-fail	q6apm-lpass-dais 6800000.remoteproc:glink-edge:gpr:service@1:bedais: Failed to start APM port 105
+# real: rnf (SDCA jack)
+asoc-error	snd_soc_sdca_class_function snd_soc_sdca.SimpleJack.0: ASoC error (-16): at soc_component_read_no_lock() on snd_soc_sdca.SimpleJack.0 for register: [0x40c00908]
+# real: 8cq, gen 109 (v7.4-rc2 without the num_components fix), 2026-11-09
+asoc-route-fail	snd-x1e80100 sound: ASoC: Failed to add route WSA WSA_SPK1 OUT(*) -> WooferLeft IN(*)
+asoc-route-fail	[   12.092020] snd-x1e80100 sound: ASoC: Failed to add route HPHL_OUT(*) -> IT 41 Playback(*)
+# real: USB (i25), 2026-10-27/28
+usb-err-71	usb 5-1: device descriptor read/64, error -71
+usb-err-71	usb 5-1: Device not responding to setup address.
+usb-err-71	usb 5-1: device not accepting address 13, error -71
+usb-err-71	[ 1213.739046] usb 1-1: device descriptor read/64, error -71
+usb-enumerate	usb usb5-port1: unable to enumerate USB device
+usb-enumerate	usb usb3-port1: Cannot enable. Maybe the USB cable is bad?
+usb-enumerate	usb usb3-port1: connect-debounce failed
+xhci-ctx-state	usb 3-1: WARN: invalid context state for evaluate context command.
+r8152-tx-status	r8152 6-1:1.0 eth0: Tx status -71
+r8152-tx-status	r8152 6-1:1.0 eth0: Tx status -2
+r8152-cfgselector-reset	r8152-cfgselector 6-1: reset SuperSpeed Plus Gen 2x1 USB device number 2 using xhci-hcd
+r8152-cfgselector-reset	r8152-cfgselector 2-1: reset SuperSpeed USB device number 2 using xhci-hcd
+r8152-error	r8152 5-1:1.0: USB reset failed, errno=-19
+r8152-error	r8152 6-1:1.0 eth0: Get ether addr fail
+fw-rtl8159-missing	r8152 6-1:1.0: Direct firmware load for rtl_nic/rtl8159-1.fw failed with error -2
+fw-rtl8159-missing	r8152 6-1:1.0: unable to load firmware patch rtl_nic/rtl8159-1.fw (-2)
+usb-hsphy-not-l2	dwc3-qcom a600000.usb: port-1 HS-PHY not in L2
+typec-altmode-fail	pmic_glink_altmode.pmic_glink_altmode pmic_glink.altmode.0: failed to switch mux to safe mode: -16
+typec-altmode-fail	pmic_glink_altmode.pmic_glink_altmode pmic_glink.altmode.0: port 1 configuration failed: -16
+usb-overcurrent	usb usb5-port1: over-current condition
+xhci-died	xhci-hcd xhci-hcd.3.auto: xHCI host controller not responding, assume dead
+xhci-died	xhci-hcd xhci-hcd.3.auto: HC died; cleaning up
+# real: 157 ath12k/MHI, 2026-10-26
+mhi-power-fail	ath12k_wifi7_pci 0004:01:00.0: failed to set mhi state: POWER_ON(2)
+mhi-power-fail	ath12k_wifi7_pci 0004:01:00.0: failed to start mhi: -110
+mhi-power-fail	ath12k_wifi7_pci 0004:01:00.0: failed to set mhi state INIT(0) in current mhi state (0x1)
+mhi-power-fail	ath12k_wifi7_pci 0004:01:00.0: timeout while waiting for restart complete
+ath12k-error	ath12k_wifi7_pci 0004:01:00.0: failed to power up hif during resume: -110
+ath12k-error	ath12k_wifi7_pci 0004:01:00.0: fail to start mac operations in pdev idx 0 ret -108
+ath12k-error	ath12k_wifi7_pci 0004:01:00.0: failed to enable PMF QOS: -108
+ath12k-error	Hardware became unavailable upon resume. This could be a software issue prior to suspend or a hardware issue.
+pm-resume-fail	ath12k_wifi7_pci 0004:01:00.0: PM: dpm_run_callback(): pci_pm_resume_early returns -110
+# real: b82.8 MLO dp_peer leak, boot a41093f3, 2026-10-28 21:48:56 / 21:49:06
+ath12k-mlo-peer-leak	ath12k_wifi7_pci 0004:01:00.0: failed to verify assoc link setting with link id 1
+ath12k-mlo-peer-leak	ath12k_wifi7_pci 0004:01:00.0: unable to create ath12k_dp_peer for sta 3a:32:7a:7d:d7:f1, ret: -17
+warn-splat	WARNING: drivers/net/wireless/ath/ath12k/mac.c:12438 at ath12k_mac_op_unassign_vif_chanctx+0x19c/0x230 [ath12k], CPU#8: wpa_supplicant/1428
+-	pc : ath12k_mac_op_unassign_vif_chanctx+0x19c/0x230 [ath12k]
+pm-resume-fail	ieee80211 phy0: PM: dpm_run_callback(): wiphy_resume [cfg80211] returns -108
+pm-resume-fail	ieee80211 phy0: PM: failed to resume async: error -108
+# real: kernel splats
+warn-splat	WARNING: net/mac80211/driver-ops.c:41 at drv_stop+0x2a4/0x308 [mac80211], CPU#16: kworker/u75:16/1881
+warn-splat	[  123.456789] WARNING: CPU: 3 PID: 1 at drivers/base/core.c:100 foo+0x10/0x20
+ubsan	UBSAN: shift-out-of-bounds in /build/source/sound/soc/soc-ops.c:169:10
+ubsan	UBSAN: array-index-out-of-bounds in /build/source/drivers/media/platform/qcom/camss/camss-vfe.c:452:36
+oops	Unable to handle kernel NULL pointer dereference at virtual address 0000000000000008
+oops	Internal error: Oops: 0000000096000004 [#1]  SMP
+oops	Kernel panic - not syncing: Oops: Fatal exception
+oops	kernel BUG at mm/slub.c:4321!
+oops	BUG: sleeping function called from invalid context at kernel/locking/mutex.c:580
+soft-lockup	watchdog: BUG: soft lockup - CPU#3 stuck for 26s! [kworker/3:1:123]
+rcu-stall	rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
+rcu-stall	rcu: INFO: rcu_preempt self-detected stall on CPU
+hung-task	INFO: task kworker/u24:3:456 blocked for more than 122 seconds.
+wdt-pretimeout	Kernel panic - not syncing: watchdog pretimeout event
+# real: fb5/ADSP crash 2026-10-27 05:59 UTC
+smmu-context-fault	arm-smmu 15000000.iommu: Unhandled context fault: fsr=0x402, iova=0xff43b960, fsynr=0x3c0012, cbfrsynra=0x1000, cb=16
+iommu-fault	(NULL device *): iommu fault: da 0xff43b940 flags 0x0
+rproc-crash	remoteproc remoteproc1: crash detected in adsp: type mmufault
+rproc-crash	remoteproc remoteproc1: crash detected in adsp: type watchdog
+rproc-crash	remoteproc remoteproc1: handling crash #1 in adsp
+rproc-crash	remoteproc remoteproc1: recovering adsp
+rproc-crash	qcom_q6v5_pas 6800000.remoteproc: watchdog received: SFR Init: wdog or kernel error suspected.
+rproc-boot-fail	remoteproc remoteproc2: Boot failed: -110
+# real: 81s, reset-B3 2026-10-29 04:02 (netconsole, s2idle resume)
+soccp-tz-force-stop	qcom_q6v5_pas d00000.remoteproc: fatal error received: sys_m_smsm.c:512:TZ force stop
+soccp-tz-force-stop	remoteproc remoteproc0: crash detected in soccp: type fatal error
+rproc-tz-err-fatal	qcom_q6v5_pas 32300000.remoteproc: fatal error received: sys_m_smsm.c:783:err fatal notification received from TZ 
+rproc-crash	remoteproc remoteproc2: crash detected in cdsp: type fatal error
+rproc-tz-err-fatal	qcom_q6v5_pas 6800000.remoteproc: fatal error received: sys_m_smsm.c:783:err fatal notification received from TZ 
+rproc-crash	remoteproc remoteproc1: crash detected in adsp: type fatal error
+# PCIe / NVMe
+pcie-1bf0000-l2-timeout	qcom-pcie 1bf0000.pcie: Timeout waiting for L2 entry! LTSSM: 0x11
+pcie-l2-timeout	qcom-pcie 1c08000.pcie: Timeout waiting for L2 entry! LTSSM: 0x11
+pcie-link-down	qcom-pcie 1c08000.pcie: Phy link never came up
+pcie-link-down	pcieport 0004:00:00.0: AER: Corrected error message received from 0004:01:00.0
+pcie-link-down	pcieport 0004:00:00.0: PCIe Bus Error: severity=Correctable, type=Physical Layer, (Receiver ID)
+nvme-timeout	nvme nvme0: I/O tag 12 (100c) opcode 0x2 (Read) QID 3 timeout, aborting req_op:READ(0) size:4096
+nvme-timeout	nvme nvme0: controller is down; will reset: CSTS=0xffffffff, PCI_STATUS=0xffff
+nvme-timeout	I/O error, dev nvme0n1, sector 123456 op 0x0:(READ) flags 0x80700 phys_seg 1 prio class 0
+# thermal
+thermal-critical	thermal thermal_zone34: critical temperature reached, shutting down
+thermal-throttle	thermal thermal_zone5: cpu-2-1-0-thermal: throttling started
+# real: display (920, hu0)
+dpu-error	[drm:dpu_encoder_frame_done_timeout:2730] [dpu error]enc42 frame done timeout
+dpu-error	[drm:dpu_crtc_frame_event_cb [msm]] *ERROR* crtc110 event 1 overflow
+dpu-error	[drm:dpu_kms_wait_for_commit_done:527] [dpu error]wait for commit done returned -110
+dpu-error	[drm:dpu_encoder_helper_report_irq_timeout [msm]] *ERROR* irq timeout id=38, intf_mode=INTF_MODE_VIDEO intf=4 wb=-1, pp=2, intr=0
+dp-lt-fail	msm-dp-display af5c000.displayport-controller: DP-2: link training failed after 1 attempt, last at 270000 x4 (mode 148500 kHz, 30 bpp): sink disconnected
+edp-lt-retry	msm-dp-display af6c000.displayport-controller: eDP-1: link training attempt 1 failed in EQ phase (-ETIMEDOUT) at 540000 x4, vs 2 pe 1, DPCD 0x202: 17 11 00 04 66 66, next at 540000 x4
+edp-link-ok	eDP link ok: lanes=4 (expected 4), failed attempts so far 0; nothing to do
+msm-no-gpu	msm_dpu ae01000.display-controller: no GPU device was found
+gpu-hang	msm_dpu ae01000.display-controller: [drm:hangcheck_handler [msm]] *ERROR* 67.5.20.1: hangcheck detected gpu lockup rb 0!
+# real: firmware, boot noise
+firmware-missing	bluetooth hci0: Direct firmware load for qca/clnbtfw10.tlv failed with error -2
+psci-pc-mode	psci: [Firmware Bug]: failed to set PC mode: -3
+dummy-regulator	qcom-pcie 1bf0000.pcie: supply vddpe-3v3 not found, using dummy regulator
+sync-state-timeout	gcc-glymur 100000.clock-controller: Timed out. Forcing sync_state()
+pm-runtime-unbalanced	amba 11219000.tpdm: Unbalanced pm_runtime_enable!
+pm-parent-sleeping	hwmon hwmon113: PM: parent phy0 should not be sleeping
+deferred-probe	platform sound: deferred probe pending: snd-x1e80100: WCD Playback: codec dai not found
+i2c-gpi-error	geni_i2c a84000.i2c: GPI transfer failed: -5
+i2c-gpi-error	gpi a00000.dma-controller: Error in Transaction
+camss-error	qcom-camss acb6000.isp: Received wm done for unmapped index
+wdt-did-not-stop	watchdog: watchdog0: watchdog did not stop!
+wdt-timeout-einval	Failed to set watchdog hardware timeout to 10min: Invalid argument
+scmi-raw-buffers	arm-scmi arm-scmi.0.auto: RAW[1] - Buffers exhausted. Re-using oldest.
+# real: not red flags (normal messages, sysrq-t dumps, test lines written to /dev/kmsg)
+-	mhi mhi0: Power on setup success
+-	mhi mhi0: Wait for device to enter SBL or Mission mode
+-	usbcore: registered new device driver r8152-cfgselector
+-	pcieport 0004:00:00.0: AER: enabled with IRQ 304
+-	nvme nvme0: D3 entry latency set to 10 seconds
+-	Using hardware watchdog /dev/watchdog0: 'qcom_wdt', version 0.
+-	Workqueue:  0x0 (rcu_gp)
+-	task:rcu_preempt     state:I stack:0     pid:15    tgid:15    ppid:2      task_flags:0x208040 flags:0x00000010
+-	  .throttle_count                : 0
+-	 rcu_tasks_kthread+0xe4/0x108
+-	obs2 crit test b41
+-	s2cycle 19 end wifi=ok irq=302
+-	hwmon hwmon112: temp2_input not attached to any thermal zone
+-	usb 5-1: new SuperSpeed Plus Gen 2x1 USB device number 2 using xhci-hcd
+-	r8152-cfgselector 6-1: USB disconnect, device number 2
+-	------------[ cut here ]------------
+-	EXT4-fs (nvme0n1p2): re-mounted 3cddd54b-2b9b-44cd-9852-e38e10775e3a.
+-	qcom-soundwire 6c80000.soundwire: Qualcomm Soundwire controller v2.1.0 Registered
+# real: dso/920 LAB-DIAG diagnostic patch; its *ERROR* line is a real failure
+lab-diag	qcom-qmp-combo-phy fde000.phy: LAB-DIAG: dp_phy STATUS[0x114]=0x07070707 CFG=0x9090909 CFG_1=0x2f2f2f2f PD_CTL=0x7d7d7d7d MODE=0x5c5c5c5c VCO_DIV=0x3030303
+drm-error	[drm:msm_dp_display_atomic_enable [msm]] *ERROR* LAB-DIAG: external DP enable failed rc=-104: sink_count=1 link 4 lanes @ 270000 kHz, mode 148500 kHz @ 30 bpp (see the combo PHY's LAB-DIAG lines above)
+drm-error	[drm:msm_dp_aux_isr [msm]] *ERROR* Unexpected DP AUX IRQ 0x01000000 when not busy
+fw-bug	arm-smmu 15000000.iommu: [Firmware Bug]: unexpected SMR configuration
+# real: rnf, gen 90 boot baa7b615, 2026-11-04 02:57 PST (s2idle with an HP stream held)
+sdca-pde-timeout	snd_soc_sdca_class_function snd_soc_sdca.SimpleJack.0: PDE 47: pde transition 3 -> 0 failed: -110
+sdca-pde-timeout	snd-x1e80100 sound: ASoC: POST_PMU: PDE 47 event failed: -110

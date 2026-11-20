@@ -1,0 +1,60 @@
+From ea77bbd1fb2675f1334b0f2d537aeb6346561a18 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 01:19:04 -0700
+Subject: [PATCH 01/11] NOT-FOR-UPSTREAM: soundwire: qcom: acknowledge interrupts before handling
+ them
+
+qcom_swrm_irq_handler() reads the interrupt status, runs the handlers,
+then writes the same status value to the clear register. An event that
+latches again while the handlers run is cleared with it and lost.
+
+This happens with peripheral alerts: a status change to ALERT latches
+both SLAVE_PEND_IRQ and CHANGE_ENUM_SLAVE_STATUS. The alert handler
+services the peripherals' SCP_INT1, which takes them back to ATTACHED
+and latches CHANGE_ENUM_SLAVE_STATUS again. If that happens after the
+CHANGE_ENUM handler read SWRM_MCP_SLV_STATUS, the late clear drops the
+new edge and the core keeps the peripheral in ALERT. On the ASUS Zenbook
+A16 (two WSA8845 per bus) parity errors on s2idle resume hit both amps
+of a bus at once, and one of them was left in "Alert" in 1 of ~3
+resumes with parity, until the next status change.
+
+Clear the latched bits first, so an event during handling is seen by
+the status re-read at the end of the loop.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index c2d6eb4abb5c..6b2d6231d53a 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -860,6 +860,15 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
+ 	intr_sts_masked = intr_sts & ctrl->intr_mask;
+ 
+ 	do {
++		/*
++		 * Acknowledge before handling. Servicing a peripheral alert
++		 * makes it go from ALERT back to ATTACHED, which latches
++		 * CHANGE_ENUM_SLAVE_STATUS again; when that bit was already
++		 * set in intr_sts, clearing it after the handlers lost the
++		 * new edge, and the peripheral stayed in ALERT.
++		 */
++		ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR],
++				intr_sts);
+ 		for (i = 0; i < SWRM_INTERRUPT_MAX; i++) {
+ 			value = intr_sts_masked & BIT(i);
+ 			if (!value)
+@@ -987,8 +996,6 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
+ 				break;
+ 			}
+ 		}
+-		ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR],
+-				intr_sts);
+ 		ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS],
+ 			       &intr_sts);
+ 		intr_sts_masked = intr_sts & ctrl->intr_mask;

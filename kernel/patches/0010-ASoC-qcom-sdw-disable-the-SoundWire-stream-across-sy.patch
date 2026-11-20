@@ -1,0 +1,183 @@
+From cf20050f101f27a8b8d6ede37314b52a378200b0 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 08:35:03 -0700
+Subject: [PATCH 10/11] NOT-FOR-UPSTREAM: ASoC: qcom: sdw: disable the SoundWire stream across
+ system suspend
+
+The Qualcomm machine drivers enable the SoundWire stream at prepare and
+disable it at hw_free, so a PCM that is open when the system suspends
+keeps its stream ENABLED. The controller then enters clock stop with its
+data ports enabled, comes out of clock stop with them still enabled, and
+the ports carry data from the moment the bus clock restarts, before the
+bus has re-synchronised or been checked. Any fault at that point lands
+on a running stream, and the controller cannot reset the bus without
+breaking it.
+
+Add qcom_snd_sdw_trigger(), which disables the stream on
+SNDRV_PCM_TRIGGER_SUSPEND and on SNDRV_PCM_TRIGGER_RESUME programs it
+again with sdw_prepare_stream() (which re-applies the port setup of a
+DISABLED stream, as after an underrun or resume) and enables it. The
+default trigger order keeps the PA sequencing the helpers rely on:
+the link trigger runs last on SUSPEND, after the codec DAIs have muted,
+and first on RESUME, before they unmute.
+
+A stream left DISABLED is also brought back by qcom_snd_sdw_prepare(),
+for user space that prepares instead of resuming, and hw_free only
+deprepares it. Use the helper in the x1e80100 machine driver, the only
+one that suspends its PCMs.
+
+On the ASUS Zenbook A16 this keeps the speaker ports off across s2idle
+and lets the controller repair a clock-stop-exit fault on resume before
+the stream restarts.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/qcom/sdw.c      | 77 ++++++++++++++++++++++++++++++++++++++-
+ sound/soc/qcom/sdw.h      |  2 +
+ sound/soc/qcom/x1e80100.c | 11 ++++++
+ 3 files changed, 88 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/qcom/sdw.c b/sound/soc/qcom/sdw.c
+index 6576b47a4c8c..578d29777626 100644
+--- a/sound/soc/qcom/sdw.c
++++ b/sound/soc/qcom/sdw.c
+@@ -123,6 +123,72 @@ int qcom_snd_sdw_startup(struct snd_pcm_substream *substream)
+ }
+ EXPORT_SYMBOL_GPL(qcom_snd_sdw_startup);
+ 
++/* Bring a prepared stream back to ENABLED from wherever suspend left it. */
++static int qcom_snd_sdw_restart(struct sdw_stream_runtime *sruntime)
++{
++	int ret;
++
++	if (sruntime->state == SDW_STREAM_DISABLED) {
++		/* Re-applies the port setup; the bus may have been reset. */
++		ret = sdw_prepare_stream(sruntime);
++		if (ret)
++			return ret;
++	}
++
++	if (sruntime->state == SDW_STREAM_PREPARED)
++		return sdw_enable_stream(sruntime);
++
++	return 0;
++}
++
++/**
++ * qcom_snd_sdw_trigger() - Helper to stop and restart the SoundWire stream
++ * across system suspend
++ * @substream: The PCM substream from audio, as passed to snd_soc_ops->trigger()
++ * @cmd: The trigger command
++ * @stream_prepared: The stream_prepared flag of this link, as passed to
++ *		     qcom_snd_sdw_prepare()
++ *
++ * The SoundWire stream is enabled at prepare and disabled at hw_free, so it
++ * otherwise stays enabled while the PCM is suspended: the controller enters
++ * and leaves clock stop with its data ports enabled, and the ports carry
++ * whatever the macro sends the moment the bus clock restarts, before the
++ * bus has been checked. Disable the stream on SUSPEND and program and enable
++ * it again on RESUME. The trigger order (link first on RESUME, last on
++ * SUSPEND, codec unmute after the DAI triggers) keeps the ports enabled
++ * whenever an amplifier is unmuted.
++ *
++ * Return: 0 or errno
++ */
++int qcom_snd_sdw_trigger(struct snd_pcm_substream *substream, int cmd,
++			 bool *stream_prepared)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct sdw_stream_runtime *sruntime;
++
++	if (!qcom_snd_is_sdw_dai(cpu_dai->id) || !*stream_prepared)
++		return 0;
++
++	sruntime = qcom_snd_sdw_get_stream(substream);
++	if (!sruntime)
++		return 0;
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++		if (sruntime->state == SDW_STREAM_ENABLED)
++			return sdw_disable_stream(sruntime);
++		break;
++	case SNDRV_PCM_TRIGGER_RESUME:
++		return qcom_snd_sdw_restart(sruntime);
++	default:
++		break;
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_snd_sdw_trigger);
++
+ int qcom_snd_sdw_prepare(struct snd_pcm_substream *substream,
+ 			 bool *stream_prepared)
+ {
+@@ -139,8 +205,13 @@ int qcom_snd_sdw_prepare(struct snd_pcm_substream *substream,
+ 	if (!sruntime)
+ 		return 0;
+ 
++	/*
++	 * Already prepared, but left DISABLED by a system suspend whose
++	 * RESUME trigger failed or never came (user space prepares
++	 * instead): program and enable the ports again.
++	 */
+ 	if (*stream_prepared)
+-		return 0;
++		return qcom_snd_sdw_restart(sruntime);
+ 
+ 	ret = sdw_prepare_stream(sruntime);
+ 	if (ret)
+@@ -204,7 +275,9 @@ int qcom_snd_sdw_hw_free(struct snd_pcm_substream *substream, bool *stream_prepa
+ 
+ 	sruntime = qcom_snd_sdw_get_stream(substream);
+ 	if (sruntime && *stream_prepared) {
+-		sdw_disable_stream(sruntime);
++		/* A stream disabled for system suspend is only deprepared. */
++		if (sruntime->state == SDW_STREAM_ENABLED)
++			sdw_disable_stream(sruntime);
+ 		sdw_deprepare_stream(sruntime);
+ 		*stream_prepared = false;
+ 	}
+diff --git a/sound/soc/qcom/sdw.h b/sound/soc/qcom/sdw.h
+index 061a63f1ac52..8fcadf57f964 100644
+--- a/sound/soc/qcom/sdw.h
++++ b/sound/soc/qcom/sdw.h
+@@ -13,4 +13,6 @@ int qcom_snd_sdw_prepare(struct snd_pcm_substream *substream,
+ struct sdw_stream_runtime *qcom_snd_sdw_get_stream(struct snd_pcm_substream *stream);
+ int qcom_snd_sdw_hw_free(struct snd_pcm_substream *substream,
+ 			 bool *stream_prepared);
++int qcom_snd_sdw_trigger(struct snd_pcm_substream *substream, int cmd,
++			 bool *stream_prepared);
+ #endif
+diff --git a/sound/soc/qcom/x1e80100.c b/sound/soc/qcom/x1e80100.c
+index 284a7641d31b..a6c3cab81661 100644
+--- a/sound/soc/qcom/x1e80100.c
++++ b/sound/soc/qcom/x1e80100.c
+@@ -157,11 +157,22 @@ static int x1e80100_snd_hw_free(struct snd_pcm_substream *substream)
+ 	return qcom_snd_sdw_hw_free(substream, &data->stream_prepared[cpu_dai->id]);
+ }
+ 
++static int x1e80100_snd_trigger(struct snd_pcm_substream *substream, int cmd)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct x1e80100_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++
++	return qcom_snd_sdw_trigger(substream, cmd,
++				    &data->stream_prepared[cpu_dai->id]);
++}
++
+ static const struct snd_soc_ops x1e80100_be_ops = {
+ 	.startup = qcom_snd_sdw_startup,
+ 	.shutdown = qcom_snd_sdw_shutdown,
+ 	.hw_free = x1e80100_snd_hw_free,
+ 	.prepare = x1e80100_snd_prepare,
++	.trigger = x1e80100_snd_trigger,
+ };
+ 
+ static void x1e80100_add_be_ops(struct snd_soc_card *card)

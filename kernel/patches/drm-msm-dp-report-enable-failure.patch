@@ -1,0 +1,184 @@
+From 1c0fd526d6c57ecd5a0743e2433d28ae36c8c4c0 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Fri, 23 Oct 2026 09:30:00 +0000
+Subject: [PATCH] NOT-FOR-UPSTREAM: drm/msm/dp: report failed external DP enables through
+ link-status
+
+.atomic_enable() cannot return an error. When
+msm_dp_display_atomic_enable() fails to bring up an external DP link
+(link training gave up, PHY power-on timed out, ...) it logs the error
+and returns, the CRTC stays active in the atomic state, and no frames
+reach the sink. A compositor then has no reason to try again: KWin on
+the ASUS Zenbook A16 (Glymur) sits on vblank timeouts with a dark
+external monitor until the cable is replugged.
+
+The link-status connector property exists for this: "If something fails
+during or after modeset, the kernel driver may set this to BAD and issue
+a hotplug uevent". Do that for DP connectors when the link preparation
+or the stream enable fails. Userspace re-probes, sees BAD and commits a
+new modeset with link-status GOOD, which the atomic helpers turn into a
+full disable/enable and so a fresh link training (or it drops the mode
+if the sink went away).
+
+drm_connector_set_link_status_property() takes the connection_mutex,
+which the failing commit may hold, so set it from a work item as i915
+(intel_connector_queue_modeset_retry_work()) and cdns-mhdp8546 do, with
+mode_config.mutex held so that probing does not race with it.
+
+Report a failure once. msm_dp_ctrl_on_link() has already walked its
+rate/lane fallbacks, so unlike i915 there is no smaller link to offer
+the retry, and a sink that never trains would otherwise keep userspace
+in a modeset loop. A successful enable or an unplug re-arms it, since
+the next sink may train. A plug does not: msm_dp_bridge_hpd_notify()
+runs the plug handler on every connector probe.
+
+The work holds a connector reference while queued and is cancelled on
+unbind. The leftover TODO in msm_dp_display_prepare_link() goes away.
+
+eDP is left as it is: msm_dp_ctrl_on_link() retries its link training
+already and an eDP panel has no hotplug of its own.
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/gpu/drm/msm/dp/dp_display.c | 69 ++++++++++++++++++++++++++++-
+ 1 file changed, 67 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/dp/dp_display.c b/drivers/gpu/drm/msm/dp/dp_display.c
+index a4dde1f8a452..86359a092149 100644
+--- a/drivers/gpu/drm/msm/dp/dp_display.c
++++ b/drivers/gpu/drm/msm/dp/dp_display.c
+@@ -12,9 +12,12 @@
+ #include <linux/phy/phy.h>
+ #include <linux/delay.h>
+ #include <linux/string_choices.h>
++#include <linux/workqueue.h>
+ #include <drm/display/drm_dp_aux_bus.h>
+ #include <drm/display/drm_hdmi_audio_helper.h>
++#include <drm/drm_connector.h>
+ #include <drm/drm_edid.h>
++#include <drm/drm_probe_helper.h>
+ #include <drm/drm_panel.h>
+ 
+ #include "msm_drv.h"
+@@ -69,6 +72,10 @@ struct msm_dp_display_private {
+ 	/* wait for audio signaling */
+ 	struct completion audio_comp;
+ 
++	/* failed .atomic_enable() reporting */
++	struct work_struct link_status_work;
++	bool link_failure_reported;
++
+ 	/* HPD IRQ handling */
+ 	spinlock_t irq_thread_lock;
+ 	u32 hpd_isr_status;
+@@ -239,6 +246,9 @@ static void msm_dp_display_unbind(struct device *dev, struct device *master,
+ 	struct msm_dp_display_private *dp = dev_get_dp_display_private(dev);
+ 	struct msm_drm_private *priv = dev_get_drvdata(master);
+ 
++	if (cancel_work_sync(&dp->link_status_work))
++		drm_connector_put(dp->msm_dp_display.connector);
++
+ 	of_dp_aux_depopulate_bus(dp->aux);
+ 
+ 	msm_dp_aux_unregister(dp->aux);
+@@ -463,6 +473,9 @@ static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
+ 
+ 	guard(mutex)(&dp->plugged_lock);
+ 
++	/* Not on plug: that also runs on every connector probe */
++	WRITE_ONCE(dp->link_failure_reported, false);
++
+ 	dp->panel->video_test = false;
+ 
+ 	msm_dp_aux_enable_xfers(dp->aux, false);
+@@ -633,6 +646,53 @@ static int msm_dp_display_set_mode(struct msm_dp *msm_dp_display,
+ 	return 0;
+ }
+ 
++static void msm_dp_display_link_status_work(struct work_struct *work)
++{
++	struct msm_dp_display_private *dp =
++		container_of(work, struct msm_dp_display_private, link_status_work);
++	struct drm_connector *connector = dp->msm_dp_display.connector;
++	struct drm_device *drm = connector->dev;
++
++	drm_dbg_dp(drm, "[CONNECTOR:%d:%s] link-status BAD\n",
++		   connector->base.id, connector->name);
++
++	/* Keep probing out while the property changes, as i915 does */
++	mutex_lock(&drm->mode_config.mutex);
++	drm_connector_set_link_status_property(connector,
++					       DRM_MODE_LINK_STATUS_BAD);
++	mutex_unlock(&drm->mode_config.mutex);
++
++	drm_kms_helper_connector_hotplug_event(connector);
++
++	drm_connector_put(connector);
++}
++
++/*
++ * .atomic_enable() cannot fail, so set link-status BAD and let userspace retry
++ * the modeset. Only once until an unplug or a good enable: the link training
++ * fallbacks have run already, so the retry has no smaller link to offer.
++ * The commit may hold connection_mutex, hence the work item.
++ */
++static void msm_dp_display_report_enable_failure(struct msm_dp_display_private *dp)
++{
++	struct drm_connector *connector = dp->msm_dp_display.connector;
++
++	if (dp->msm_dp_display.is_edp || !connector)
++		return;
++
++	if (READ_ONCE(dp->link_failure_reported)) {
++		drm_dbg_dp(dp->drm_dev,
++			   "[CONNECTOR:%d:%s] enable failed again, not reported\n",
++			   connector->base.id, connector->name);
++		return;
++	}
++	WRITE_ONCE(dp->link_failure_reported, true);
++
++	drm_connector_get(connector);
++	if (!schedule_work(&dp->link_status_work))
++		drm_connector_put(connector);
++}
++
+ static int msm_dp_display_prepare_link(struct msm_dp_display_private *dp)
+ {
+ 	struct msm_dp *msm_dp_display = &dp->msm_dp_display;
+@@ -663,7 +723,6 @@ static int msm_dp_display_prepare_link(struct msm_dp_display_private *dp)
+ 	rc = msm_dp_ctrl_on_link(dp->ctrl, dp->panel);
+ 	if (rc) {
+ 		drm_dbg_dp(dp->drm_dev, "Failed link training (rc=%d)\n", rc);
+-		// TODO: schedule drm_connector_set_link_status_property()
+ 		goto error;
+ 	}
+ 
+@@ -1298,6 +1357,7 @@ static int msm_dp_display_probe(struct platform_device *pdev)
+ 	dp->msm_dp_display.msm_dp_audio = dp->audio;
+ 
+ 	init_completion(&dp->audio_comp);
++	INIT_WORK(&dp->link_status_work, msm_dp_display_link_status_work);
+ 
+ 	platform_set_drvdata(pdev, &dp->msm_dp_display);
+ 
+@@ -1503,12 +1563,17 @@ void msm_dp_display_atomic_enable(struct msm_dp *msm_dp_display,
+ 	rc = msm_dp_display_prepare_link(dp);
+ 	if (rc) {
+ 		drm_dbg_dp(dp->drm_dev, "DP display prepare failed, rc=%d\n", rc);
++		msm_dp_display_report_enable_failure(dp);
+ 		return;
+ 	}
+ 
+ 	rc = msm_dp_display_enable(dp, dp->panel);
+-	if (rc)
++	if (rc) {
+ 		DRM_ERROR("DP display enable failed, rc=%d\n", rc);
++		msm_dp_display_report_enable_failure(dp);
++	} else {
++		WRITE_ONCE(dp->link_failure_reported, false);
++	}
+ 
+ 	rc = msm_dp_display_post_enable(msm_dp_display);
+ 	if (rc) {

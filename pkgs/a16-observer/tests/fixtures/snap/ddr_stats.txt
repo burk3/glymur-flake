@@ -1,0 +1,15 @@
+DDR LPM Stat Name:0xd4	count:4	Duration (ticks):1577083539
+DDR LPM Stat Name:0xd3	count:0	Duration (ticks):0
+DDR LPM Stat Name:0x11	count:0	Duration (ticks):0
+DDR LPM Stat Name:0xd0	count:4	Duration (ticks):67619199744
+DDR Freq 200Mhz:	CP IDX:1	count:1	Duration (ticks):32510464
+DDR Freq 547Mhz:	CP IDX:2	count:1	Duration (ticks):9183744
+DDR Freq 1353Mhz:	CP IDX:3	count:1	Duration (ticks):0
+DDR Freq 1555Mhz:	CP IDX:4	count:1	Duration (ticks):0
+DDR Freq 1708Mhz:	CP IDX:5	count:1	Duration (ticks):0
+DDR Freq 2092Mhz:	CP IDX:6	count:1	Duration (ticks):224768
+DDR Freq 2736Mhz:	CP IDX:7	count:1	Duration (ticks):51274240
+DDR Freq 3187Mhz:	CP IDX:8	count:1	Duration (ticks):290679296
+DDR Freq 3686Mhz:	CP IDX:9	count:1	Duration (ticks):0
+DDR Freq 4224Mhz:	CP IDX:10	count:1	Duration (ticks):64966003200
+DDR Freq 4761Mhz:	CP IDX:11	count:1	Duration (ticks):2269324288

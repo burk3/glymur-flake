@@ -1,0 +1,67 @@
+From 6c7dcad872701e4cb160fa559ae692c8a4e98e6e Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Thu, 29 Oct 2026 08:30:43 -0700
+Subject: [PATCH] NOT-FOR-UPSTREAM: soundwire: qcom: don't let a no-ALERT status read hide ALERT
+ -> ATTACHED
+
+The CHANGE_ENUM_SLAVE_STATUS handler skips a SWRM_MCP_SLV_STATUS value
+equal to ctrl->slave_status, which stands for the status last handed to
+the SoundWire core. qcom_swrm_get_alert_slave_dev_num() also updates
+that cache (through qcom_swrm_get_device_status()), but when it finds
+no peripheral in ALERT the SLAVE_PEND_IRQ handler does not pass the
+status on. A later status change to the same value is then skipped.
+
+That is what happens after a peripheral alert: the core services it
+(the peripheral goes ALERT -> ATTACHED), the re-latched SLAVE_PEND_IRQ
+finds nobody in ALERT any more and caches the new ATTACHED status, and
+the CHANGE_ENUM edge for the same transition reports "Slave status not
+changed". The core keeps the peripherals in ALERT until the status
+changes again. With clock stop across system sleep it doesn't: on the
+ASUS Zenbook A16 (two WSA8845 per bus) a parity error on one s2idle
+resume left both amplifiers of a bus in "Alert" for the next 68
+resumes. The amplifiers themselves were fine (status register 0x14,
+both ATTACHED, and audio played), but a peripheral the core holds in
+ALERT counts as attached, so a later fault on it would not be told
+apart.
+
+Keep the cached value when the status read in the SLAVE_PEND_IRQ
+handler was not handed over, so the CHANGE_ENUM handler reports the
+ALERT -> ATTACHED change.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 095d361e4e1d..b2e20221a3e9 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -984,7 +984,7 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
+ {
+ 	struct qcom_swrm_ctrl *ctrl = dev_id;
+-	u32 value, intr_sts, intr_sts_masked, slave_status;
++	u32 value, intr_sts, intr_sts_masked, slave_status, reported;
+ 	u32 i;
+ 	int devnum, loops = 0;
+ 	int ret = IRQ_HANDLED;
+@@ -1037,10 +1037,12 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
+ 
+ 			switch (value) {
+ 			case SWRM_INTERRUPT_STATUS_SLAVE_PEND_IRQ:
++				reported = ctrl->slave_status;
+ 				devnum = qcom_swrm_get_alert_slave_dev_num(ctrl);
+ 				if (devnum < 0) {
+ 					dev_err_ratelimited(ctrl->dev,
+ 					    "no slave alert found.spurious interrupt\n");
++					ctrl->slave_status = reported;
+ 				} else {
+ 					sdw_handle_slave_status(&ctrl->bus, ctrl->status);
+ 					wake_up_all(&ctrl->slaves_wait);
+-- 
+2.54.0
+

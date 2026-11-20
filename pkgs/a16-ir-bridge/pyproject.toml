@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a16-ir-bridge"
+version = "0.1.0"
+description = "On-demand HM1092 IR camera to v4l2loopback bridge for howdy on the Zenbook A16"
+requires-python = ">=3.11"
+dependencies = ["numpy"]
+
+[project.scripts]
+a16-ir-bridge = "a16_ir_bridge.cli:main"
+a16-ir-bridge-trigger = "a16_ir_bridge.trigger:main"
+
+[tool.setuptools]
+packages = ["a16_ir_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

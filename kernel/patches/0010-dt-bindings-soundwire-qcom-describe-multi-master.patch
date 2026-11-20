@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Thu, 1 Oct 2026 10:38:03 +0100
+Subject: [PATCH 10/22] dt-bindings: soundwire: qcom: describe multi-master
+
+v3.1.0+ Qualcomm SoundWire IPs can be paired to expose one logical
+bus with more than two DATA lanes. Add three properties that describe
+such a pair:
+
+  qcom,multi-master-mode  role in the pair ("primary" or "dependent")
+  qcom,multi-master-peer  <phandle, bus-port-offset> to the other IP
+  num-lanes               DATA lanes each IP exposes locally
+
+Both nodes carry qcom,multi-master-mode / qcom,multi-master-peer /
+num-lanes.
+
+Reviewed-by: Krzysztof Kozlowski <krzysztof.kozlowski@oss.qualcomm.com>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Link: https://patch.msgid.link/20261001093806.634862-2-srinivas.kandagatla@oss.qualcomm.com
+Signed-off-by: Abel Vesa <abel.vesa@oss.qualcomm.com>
+(cherry picked from commit a94c1410460c814ee433f3872f69d81e667d4dff)
+---
+ .../bindings/soundwire/qcom,soundwire.yaml    | 108 ++++++++++++++++--
+ 1 file changed, 99 insertions(+), 9 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml b/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml
+index 7c8268051c2c..9250999515b4 100644
+--- a/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml
++++ b/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml
+@@ -223,6 +223,36 @@ properties:
+           maximum: 4
+         - const: 0xff
+ 
++  qcom,multi-master-mode:
++    description:
++      Role in v3.1.0+ multi-master mode. Both nodes set this; the
++      primary owns SWR_CLK, the dependent contributes DATA lanes
++      only.
++    $ref: /schemas/types.yaml#/definitions/string
++    enum: [ primary, dependent ]
++
++  qcom,multi-master-peer:
++    description:
++      Peers in multi-master mode. Each entry is a
++      <peer-phandle, bus-port-offset> pair. Peer N's DPn slots
++      1, 2, 3, ... occupy bus ports (offset+1), (offset+2), ...
++    $ref: /schemas/types.yaml#/definitions/phandle-array
++    items:
++      items:
++        - description: peer phandle
++        - description: bus port offset (last primary-local port)
++    minItems: 1
++
++  num-lanes:
++    description:
++      Number of DATA lanes this IP exposes locally. Required in
++      multi-master mode; on the primary it defines the boundary
++      between local bus lanes (0..num-lanes-1) and lanes contributed
++      by the dependent.
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minimum: 1
++    maximum: 8
++
+   label:
+     maxItems: 1
+ 
+@@ -232,21 +262,81 @@ required:
+   - interrupts
+   - clocks
+   - clock-names
+-  - '#sound-dai-cells'
+   - '#address-cells'
+   - '#size-cells'
+-  - qcom,ports-offset1
+-  - qcom,ports-offset2
+-
+-oneOf:
+-  - required:
+-      - qcom,ports-sinterval-low
+-  - required:
+-      - qcom,ports-sinterval
+ 
+ allOf:
+   - $ref: soundwire-controller.yaml#
+ 
++  # Single-master (no qcom,multi-master-mode): needs port config.
++  - if:
++      not:
++        required:
++          - qcom,multi-master-mode
++    then:
++      required:
++        - '#sound-dai-cells'
++        - qcom,ports-offset1
++        - qcom,ports-offset2
++      oneOf:
++        - required:
++            - qcom,ports-sinterval-low
++        - required:
++            - qcom,ports-sinterval
++
++  # Multi-master primary: drives the bus, needs port config + MM props.
++  - if:
++      properties:
++        qcom,multi-master-mode:
++          const: primary
++      required:
++        - qcom,multi-master-mode
++    then:
++      properties:
++        compatible:
++          contains:
++            const: qcom,soundwire-v3.1.0
++      required:
++        - '#sound-dai-cells'
++        - qcom,ports-offset1
++        - qcom,ports-offset2
++        - qcom,multi-master-peer
++        - num-lanes
++      oneOf:
++        - required:
++            - qcom,ports-sinterval-low
++        - required:
++            - qcom,ports-sinterval
++
++  # Multi-master dependent: contributes DATA lanes only, no ports.
++  - if:
++      properties:
++        qcom,multi-master-mode:
++          const: dependent
++      required:
++        - qcom,multi-master-mode
++    then:
++      properties:
++        compatible:
++          contains:
++            const: qcom,soundwire-v3.1.0
++        '#sound-dai-cells': false
++        qcom,din-ports: false
++        qcom,dout-ports: false
++        qcom,ports-word-length: false
++        qcom,ports-sinterval-low: false
++        qcom,ports-sinterval: false
++        qcom,ports-offset1: false
++        qcom,ports-offset2: false
++        qcom,ports-lane-control: false
++        qcom,ports-block-pack-mode: false
++        qcom,ports-hstart: false
++        qcom,ports-hstop: false
++        qcom,ports-block-group-count: false
++      required:
++        - qcom,multi-master-peer
++        - num-lanes
++
+ unevaluatedProperties: false
+ 
+ examples:

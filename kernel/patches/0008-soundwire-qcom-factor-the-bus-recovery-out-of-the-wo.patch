@@ -1,0 +1,93 @@
+From fdeb59e9b2bfd86da17318a988f9dd561576a464 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 08:34:08 -0700
+Subject: [PATCH 08/11] NOT-FOR-UPSTREAM: soundwire: qcom: factor the bus recovery out of the
+ worker
+
+No functional change: the reset and re-enumeration move into
+qcom_swrm_recover(), which the next change also calls from the system
+resume callback, where reprobing peripherals must be skipped.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 36 +++++++++++++++++++++++-------------
+ 1 file changed, 23 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 506a551eb84d..fe581ab0156d 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -804,23 +804,22 @@ static void qcom_swrm_sync_bank(struct qcom_swrm_ctrl *ctrl)
+ 	mutex_unlock(&ctrl->bus.bus_lock);
+ }
+ 
+-static void qcom_swrm_recover_work(struct work_struct *work)
++/*
++ * Reset the controller and re-enumerate the bus. Called with
++ * qcom_swrm_probe_recovery_lock and ctrl->recovery_lock held, with no stream
++ * running on the bus. @reprobe allows reprobing peripherals that never bound,
++ * which must not happen from a system resume callback (probing is blocked
++ * until the transition ends).
++ */
++static void qcom_swrm_recover(struct qcom_swrm_ctrl *ctrl, bool reprobe)
+ {
+-	struct qcom_swrm_ctrl *ctrl =
+-		container_of(work, struct qcom_swrm_ctrl, recovery_work);
+ 	unsigned long time_left;
+ 	int generation, ret;
+ 	bool attached;
+ 
+-	mutex_lock(&qcom_swrm_probe_recovery_lock);
+-	mutex_lock(&ctrl->recovery_lock);
+-	if (!READ_ONCE(ctrl->recovery_ready) || ctrl->system_suspended ||
+-	    qcom_swrm_stream_running(ctrl))
+-		goto unlock;
+-
+ 	generation = atomic_read(&ctrl->recovery_pending);
+ 	if (!generation)
+-		goto unlock;
++		return;
+ 	ctrl->recovery_failed = false;
+ 
+ 	/* The fault was reported by a threaded IRQ; let it finish first. */
+@@ -833,7 +832,7 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ 				    ret);
+ 		if (atomic_cmpxchg(&ctrl->recovery_pending, generation, 0) == generation)
+ 			ctrl->recovery_failed = true;
+-		goto unlock;
++		return;
+ 	}
+ 
+ 	/* A reset during an open stream drops its port routing. */
+@@ -856,7 +855,7 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ 	qcom_swrm_enumerate(&ctrl->bus);
+ 	sdw_handle_slave_status(&ctrl->bus, ctrl->status);
+ 	attached = qcom_swrm_all_slaves_online(ctrl);
+-	if (!attached) {
++	if (!attached && reprobe) {
+ 		qcom_swrm_reprobe_unattached_slaves(ctrl);
+ 		/* Reprobe can release reset before the attach IRQ is handled. */
+ 		attached = wait_event_timeout(ctrl->slaves_wait,
+@@ -885,7 +884,18 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ 
+ 	pm_runtime_mark_last_busy(ctrl->dev);
+ 	pm_runtime_put_autosuspend(ctrl->dev);
+-unlock:
++}
++
++static void qcom_swrm_recover_work(struct work_struct *work)
++{
++	struct qcom_swrm_ctrl *ctrl =
++		container_of(work, struct qcom_swrm_ctrl, recovery_work);
++
++	mutex_lock(&qcom_swrm_probe_recovery_lock);
++	mutex_lock(&ctrl->recovery_lock);
++	if (READ_ONCE(ctrl->recovery_ready) && !ctrl->system_suspended &&
++	    !qcom_swrm_stream_running(ctrl))
++		qcom_swrm_recover(ctrl, true);
+ 	mutex_unlock(&ctrl->recovery_lock);
+ 	mutex_unlock(&qcom_swrm_probe_recovery_lock);
+ }

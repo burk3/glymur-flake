@@ -1,0 +1,108 @@
+From 26155f9654712cda27388a317966c13751e41c31 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 08:32:54 -0700
+Subject: [PATCH] NOT-FOR-UPSTREAM: soundwire: qcom: stop clash recovery across system sleep
+
+The system sleep callbacks are pm_runtime_force_suspend() and
+pm_runtime_force_resume(). pm_runtime_force_suspend() calls
+swrm_runtime_suspend() regardless of the runtime PM usage count, so it
+does not wait for a deferred clash recovery that holds a runtime PM
+reference. If the recovery worker is still running (a SW reset, init,
+waiting up to 500 ms for enumeration) when the system suspends, the
+controller enters clock stop and gates hclk underneath it, the macro
+that provides hclk suspends after it, and the worker's next register
+access is unclocked.
+
+Mark the controller suspended and cancel the worker before forcing the
+runtime suspend, and keep the worker from running until the system
+resume callback has resumed the controller. A recovery requested in
+between is queued again on resume.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 54 ++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index c218f8a35aec..02a67a19aec7 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -215,6 +215,8 @@ struct qcom_swrm_ctrl {
+ 	unsigned int active_streams;
+ 	bool recovery_failed;
+ 	bool recovery_ready;
++	/* Set across system sleep; recovery must not run (recovery_lock). */
++	bool system_suspended;
+ 	struct clk *hclk;
+ 	int irq;
+ 	u32 ee;
+@@ -828,7 +830,8 @@ static void qcom_swrm_recover_work(struct work_struct *work)
+ 
+ 	mutex_lock(&qcom_swrm_probe_recovery_lock);
+ 	mutex_lock(&ctrl->recovery_lock);
+-	if (!READ_ONCE(ctrl->recovery_ready) || ctrl->active_streams)
++	if (!READ_ONCE(ctrl->recovery_ready) || ctrl->system_suspended ||
++	    ctrl->active_streams)
+ 		goto unlock;
+ 
+ 	generation = atomic_read(&ctrl->recovery_pending);
+@@ -2325,8 +2328,55 @@ static int __maybe_unused swrm_runtime_suspend(struct device *dev)
+ 	return ret;
+ }
+ 
++/*
++ * pm_runtime_force_suspend() runs swrm_runtime_suspend() whatever the usage
++ * count, so a clash recovery still running on the workqueue would go on
++ * resetting and programming the controller after its clock is gone and the
++ * macro has suspended. Stop it first, and keep it from starting again until
++ * the controller is resumed.
++ */
++static int __maybe_unused swrm_system_suspend(struct device *dev)
++{
++	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(dev);
++	int ret;
++
++	mutex_lock(&ctrl->recovery_lock);
++	ctrl->system_suspended = true;
++	mutex_unlock(&ctrl->recovery_lock);
++	cancel_work_sync(&ctrl->recovery_work);
++
++	ret = pm_runtime_force_suspend(dev);
++	if (ret) {
++		mutex_lock(&ctrl->recovery_lock);
++		ctrl->system_suspended = false;
++		mutex_unlock(&ctrl->recovery_lock);
++		if (atomic_read(&ctrl->recovery_pending))
++			schedule_work(&ctrl->recovery_work);
++	}
++
++	return ret;
++}
++
++static int __maybe_unused swrm_system_resume(struct device *dev)
++{
++	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(dev);
++	int ret;
++
++	ret = pm_runtime_force_resume(dev);
++
++	mutex_lock(&ctrl->recovery_lock);
++	ctrl->system_suspended = false;
++	mutex_unlock(&ctrl->recovery_lock);
++
++	/* A fault reported while suspended or during resume. */
++	if (atomic_read(&ctrl->recovery_pending))
++		schedule_work(&ctrl->recovery_work);
++
++	return ret;
++}
++
+ static const struct dev_pm_ops swrm_dev_pm_ops = {
+-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
++	SET_SYSTEM_SLEEP_PM_OPS(swrm_system_suspend, swrm_system_resume)
+ 	SET_RUNTIME_PM_OPS(swrm_runtime_suspend, swrm_runtime_resume, NULL)
+ };
+ 

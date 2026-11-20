@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Sun, 12 Jul 2026 17:49:13 +0100
+Subject: [PATCH 17/22] ASoC: dt-bindings: qcom: add Glymur LPASS rx and tx
+ macro codecs
+
+Add qcom,glymur-lpass-rx-macro and qcom,glymur-lpass-tx-macro to the
+compatible enums for lpass-rx-macro and lpass-tx-macro bindings.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit f9e54f2fe8cfa773f849979e402913dc03d37836)
+(cherry picked from commit cee64518e61efa06679d25cc36cf06e2f893e039)
+---
+ Documentation/devicetree/bindings/sound/qcom,lpass-rx-macro.yaml | 1 +
+ Documentation/devicetree/bindings/sound/qcom,lpass-tx-macro.yaml | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/sound/qcom,lpass-rx-macro.yaml b/Documentation/devicetree/bindings/sound/qcom,lpass-rx-macro.yaml
+index 4988e7ed6e34..be3e77ab28e2 100644
+--- a/Documentation/devicetree/bindings/sound/qcom,lpass-rx-macro.yaml
++++ b/Documentation/devicetree/bindings/sound/qcom,lpass-rx-macro.yaml
+@@ -22,6 +22,7 @@ properties:
+       - items:
+           - enum:
+               - qcom,eliza-lpass-rx-macro
++              - qcom,glymur-lpass-rx-macro
+               - qcom,kaanapali-lpass-rx-macro
+               - qcom,sm8650-lpass-rx-macro
+               - qcom,sm8750-lpass-rx-macro
+diff --git a/Documentation/devicetree/bindings/sound/qcom,lpass-tx-macro.yaml b/Documentation/devicetree/bindings/sound/qcom,lpass-tx-macro.yaml
+index d8682ff2e82c..0f35d10c988a 100644
+--- a/Documentation/devicetree/bindings/sound/qcom,lpass-tx-macro.yaml
++++ b/Documentation/devicetree/bindings/sound/qcom,lpass-tx-macro.yaml
+@@ -22,6 +22,7 @@ properties:
+       - items:
+           - enum:
+               - qcom,eliza-lpass-tx-macro
++              - qcom,glymur-lpass-tx-macro
+               - qcom,kaanapali-lpass-tx-macro
+               - qcom,sm8650-lpass-tx-macro
+               - qcom,sm8750-lpass-tx-macro

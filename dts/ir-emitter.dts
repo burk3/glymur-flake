@@ -1,0 +1,36 @@
+// IR flood emitter, stage 2 (ganged, first-light values).
+// Selected by hardware.asus-zenbook-a16.irEmitter.stage (modules/ir-emitter.nix).
+// Do not raise these currents.
+//
+// PMH0101 (SPMI bus 0, SID 1) flash LED module at 0xee00, channels 1 and 4
+// ganged as one IR LED (Tyler Baker's A16 tree found it lights only with
+// both; the QRD reference pairs 1+4 the same way). The driver splits every
+// current evenly across the two channels.
+//
+//   led-max-microamp      torch, total: 100 mA = 50 mA per channel; also
+//                         the hardware TORCH_CLAMP (50 mA per channel).
+//                         Torch has no safety timer.
+//   flash-max-microamp    flash (strobe), total: 200 mA = 100 mA per channel.
+//   flash-max-timeout-us  hardware safety timer per strobe: 100 ms.
+//
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/leds/common.h>
+
+/ {
+	compatible = "asus,zenbook-a16-ux3607oa";
+};
+
+&{/soc@0/arbiter@c400000/spmi@c426000/pmic@1/led-controller@ee00} {
+	status = "okay";
+
+	led-0 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_IR>;
+		led-sources = <1>, <4>;
+		led-max-microamp = <100000>;
+		flash-max-microamp = <200000>;
+		flash-max-timeout-us = <100000>;
+	};
+};

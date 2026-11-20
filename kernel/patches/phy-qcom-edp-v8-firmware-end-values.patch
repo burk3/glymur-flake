@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Subject: [PATCH] NOT-FOR-UPSTREAM: phy: qcom: edp: end v8 power-on with the values UEFI leaves
+
+Christian Cortner (A16 owner) reported on Bjorn Andersson's "phy: qcom:
+edp: update v8 power-on programming sequence" (v1, 2026-06-22; rc5
+0002/0003 here), Message-ID
+<179346367993.44447.8683103034067826560.x2e-share-edp@gmail.com>, that
+the A16's UEFI ends eDP PHY power-on with five registers set differently
+from the series, and that writing the UEFI values at the end of
+power-on made every 4-lane HBR2 link train cleanly:
+
+  DP_PHY_CFG_1             0x2f -> 0x0f
+  DP_PHY_TX2_TX3_LANE_CTL  0x05 -> 0x00
+  TXn_RESET_TSYNC_EN       0x0a -> 0x03 (tx0 and tx1)
+  DP_PHY_TSYNC_OVRD        0x3e -> 0x10
+  DP_PHY_CFG after DCC     0x09 -> 0x19
+
+Write them after a successful DCC calibration in
+qcom_edp_finish_power_on_v8(). Nothing else changes; ldo_config stays
+at the series' 0xd0. Which of the five matters is not known.
+
+Measured on the A16, natural link training only (failed attempts are
+recovered by msm-dp-edp-link-training-retry):
+  gen 89 (a16-7.4 + this):  0 of 500 fb0 blank/unblank enables and
+                            0 of 162 boots with a failed attempt
+  gen 85 (a16-7.4 without): 30 of 400 enables, 8 of 61 boots
+  gen 80 (a16-7.3-bridge):  6 of 100 enables, 7 of 106 boots
+All links ended at HBR2 x4. Beads 9bu (test), c34 (carry, approved
+2026-11-03).
+
+Carried until Bjorn's next revision of the series; drop it then if the
+revision programs these values, or re-test.
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+--- a/drivers/phy/qualcomm/phy-qcom-edp.c
++++ b/drivers/phy/qualcomm/phy-qcom-edp.c
+@@ -1592,7 +1592,23 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	return qcom_edp_run_dcc_calibration(edp);
++	ret = qcom_edp_run_dcc_calibration(edp);
++	if (ret)
++		return ret;
++
++	/*
++	 * End power-on with the five values the A16's UEFI leaves (Christian
++	 * Cortner's report on the v8 power-on series); carried until the
++	 * series' next revision.
++	 */
++	writel(0x0f, edp->edp + DP_PHY_CFG_1);
++	writel(0x00, edp->edp + DP_PHY_TX2_TX3_LANE_CTL);
++	writel(0x03, edp->tx0 + TXn_RESET_TSYNC_EN);
++	writel(0x03, edp->tx1 + TXn_RESET_TSYNC_EN);
++	writel(0x10, edp->edp + DP_PHY_TSYNC_OVRD);
++	writel(0x19, edp->edp + DP_PHY_CFG);
++
++	return 0;
+ }
+ 
+ static int qcom_edp_phy_power_on(struct phy *phy)

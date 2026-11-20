@@ -1,0 +1,37 @@
+From 4b561585379684ecfed2120433b367ec03607093 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 01:19:04 -0700
+Subject: [PATCH 02/11] NOT-FOR-UPSTREAM: soundwire: qcom: count ALERT peripherals as online for
+ clash recovery
+
+qcom_swrm_all_slaves_online() requires SDW_SLAVE_ATTACHED, but a
+peripheral in SDW_SLAVE_ALERT is attached: it has (or just had) an
+interrupt pending. The SoundWire core treats the two alike for clock
+stop. A peripheral left in ALERT made the deferred clash recovery
+report "slaves still missing", keep the clash interrupt masked and fail
+every later stream startup on that bus with -EIO.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 6b2d6231d53a..5551c0bf28ea 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -752,7 +752,10 @@ static bool qcom_swrm_all_slaves_online(struct qcom_swrm_ctrl *ctrl)
+ 	mutex_lock(&ctrl->bus.bus_lock);
+ 	online = !list_empty(&ctrl->bus.slaves);
+ 	list_for_each_entry(slave, &ctrl->bus.slaves, node) {
+-		if (!slave->dev_num || slave->status != SDW_SLAVE_ATTACHED) {
++		/* ALERT is attached with an interrupt pending or just serviced. */
++		if (!slave->dev_num ||
++		    (slave->status != SDW_SLAVE_ATTACHED &&
++		     slave->status != SDW_SLAVE_ALERT)) {
+ 			online = false;
+ 			break;
+ 		}

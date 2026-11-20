@@ -1,0 +1,108 @@
+From: Burke Cates <burke.cates@gmail.com>
+Subject: [PATCH] NOT-FOR-UPSTREAM: arm64: dts: qcom: glymur-asus-zenbook-a16: throttle on PMH0104 temperature alarms
+
+LAB, not for upstream as-is. pmh0104-glymur.dtsi gives the pmh0104-i0 and
+pmh0104-j0 thermal zones a 95 C passive trip and a 115 C critical trip but
+no cooling-maps, so the passive trip does nothing. A FurMark run on battery
+(~88 W discharge) took pmh0104-i0 to its critical trip and the kernel did a
+HARDWARE PROTECTION shutdown, while the GPU zones sat at 92-95 C.
+
+Map both zones' existing passive trips to the GPU devfreq cooling device and
+to the three CPU clusters (cpu0, cpu6, cpu12). Which rails PMH0104 I/J feed is
+not described in the DT (they are firmware-managed), hence GPU and CPU.
+
+The cooling devices get a lower limit. The PMIC temp alarm reports its
+over-temperature stage rather than a measured temperature (37 C, then 97 C,
+then 115 C critical), so after the zone crosses the 95 C passive trip its
+temperature stays flat at 97 C. step_wise only raises a cooling state while
+the trend is rising, so with no lower limit each device moved one state and
+stayed there: GPU devfreq state 1 (1700 MHz of 1850) and cpufreq state 1 on
+every cluster, which on cpu6/cpu12 is the 4800 MHz boost OPP, i.e. no cap at
+all with boost off. On the first throttle step_wise clamps the target to
+[lower, upper], so the lower limit sets the depth of that one step (cooling
+state N is N steps below the top of the device's frequency table):
+
+  gpu          4 -> 1185 MHz of 1850 MHz
+  cpu0 (0-5)   7 -> 2630.4 MHz of 3609.6 MHz (73%)
+  cpu6, cpu12  9 -> 3225.6 MHz of 4454.4 MHz (72%; the table starts with
+                   the 5011.2 and 4800 MHz boost OPPs)
+
+The upper limits stay THERMAL_NO_LIMIT. When the alarm drops below the trip
+the instances are released as before. Trip temperatures and hysteresis are
+unchanged; only labels on the existing passive trips and cooling-maps are
+added.
+
+Applies on top of the FixItFoundry zenbook-a16-linux series.
+
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+--- a/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
++++ b/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
+@@ -2253,3 +2253,64 @@
+ 		};
+ 	};
+ };
++
++/*
++ * LAB: throttle on the PMH0104 temperature alarms. pmh0104-glymur.dtsi gives
++ * both zones a 95 C passive trip but no cooling-maps, so nothing acted on it
++ * and a FurMark run on battery went straight to the 115 C critical trip
++ * (HARDWARE PROTECTION shutdown). The trips are unchanged; only labels and
++ * cooling-maps are added. Which rails PMH0104 I/J supply is not in the DT
++ * (firmware-managed), so both zones throttle the GPU and every CPU cluster.
++ *
++ * The temp alarm reports its over-temperature stage, not a measurement
++ * (37 C, then 97 C, then 115 C critical), so once the passive trip is
++ * crossed the temperature stays flat and step_wise moves each cooling
++ * device only one state. The lower limits make that one step a useful
++ * cap (cooling state N = N steps below the top of the frequency table):
++ *   gpu    4 -> 1185 MHz of 1850
++ *   cpu0   7 -> 2630.4 MHz of 3609.6 (73%)
++ *   cpu6/
++ *   cpu12  9 -> 3225.6 MHz of 4454.4 (72%; states 0-1 are the 5011.2 and
++ *               4800 MHz boost OPPs)
++ */
++&{/thermal-zones/pmh0104-i0-thermal} {
++	trips {
++		pmh0104_i0_alert: trip0 {
++		};
++	};
++
++	cooling-maps {
++		map0 {
++			trip = <&pmh0104_i0_alert>;
++			cooling-device = <&gpu 4 THERMAL_NO_LIMIT>;
++		};
++
++		map1 {
++			trip = <&pmh0104_i0_alert>;
++			cooling-device = <&cpu0 7 THERMAL_NO_LIMIT>,
++					 <&cpu6 9 THERMAL_NO_LIMIT>,
++					 <&cpu12 9 THERMAL_NO_LIMIT>;
++		};
++	};
++};
++
++&{/thermal-zones/pmh0104-j0-thermal} {
++	trips {
++		pmh0104_j0_alert: trip0 {
++		};
++	};
++
++	cooling-maps {
++		map0 {
++			trip = <&pmh0104_j0_alert>;
++			cooling-device = <&gpu 4 THERMAL_NO_LIMIT>;
++		};
++
++		map1 {
++			trip = <&pmh0104_j0_alert>;
++			cooling-device = <&cpu0 7 THERMAL_NO_LIMIT>,
++					 <&cpu6 9 THERMAL_NO_LIMIT>,
++					 <&cpu12 9 THERMAL_NO_LIMIT>;
++		};
++	};
++};

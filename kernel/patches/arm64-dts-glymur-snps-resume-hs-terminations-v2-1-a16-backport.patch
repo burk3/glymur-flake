@@ -1,0 +1,77 @@
+From: Peter Chen <peter.chen@oss.qualcomm.com>
+Date: Sun, 18 Oct 2026 19:15:44 -0700
+Subject: [PATCH v2 1/4] arm64: dts: qcom: glymur: Set
+ snps,resume-hs-terminations for USB controllers
+Message-Id: <20261019021547.1694088-2-peter.chen@oss.qualcomm.com>
+
+The DWC3 controllers on Glymur are paired with the M31 eUSB2 PHY.
+According to HPG, host-mode USB2 L2/L1 resume with this PHY, GUCTL1[10]
+(RESUME_OPMODE_HS_HOST) must be set.
+
+Without this bit setting, USB2 HS device cannot be reset after it is
+runtime resumed. For example, after:
+
+  echo on > /sys/bus/usb/devices/1-1/power/control
+
+PORTSC.PR never clears (PORTSC = 0xe11) and the hub driver fails with
+"port_wait_reset: err = -16".
+
+Set snps,resume-hs-terminations on all Glymur USB controllers. This
+makes dwc3 core set GUCTL1[10] and fixes the issue, tested on Glymur CRD.
+
+Reviewed-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Fixes: 4eee57dd4df9 ("arm64: dts: qcom: glymur: Add USB related nodes")
+Assisted-by: Claude:claude-opus-5-5
+Signed-off-by: Peter Chen <peter.chen@oss.qualcomm.com>
+Reviewed-by: Abel Vesa <abel.vesa@oss.qualcomm.com>
+[ A16 backport, snap2xee: the unmodified posting is
+  arm64-dts-glymur-snps-resume-hs-terminations-v2-1.mbox (patchwork
+  14898718; 2-4/4 are other SoCs). glymur.dtsi in the rc5 queue differs
+  from the posting's base around the USB nodes, so the hunks are
+  re-anchored: the same property after snps,dis_enblslpm_quirk in the
+  same five DWC3 nodes (usb_0, usb_1, usb_2, usb_hs, usb_mp). ]
+---
+diff --git a/arch/arm64/boot/dts/qcom/glymur.dtsi b/arch/arm64/boot/dts/qcom/glymur.dtsi
+index 6204780ad..34edde2fd 100644
+--- a/arch/arm64/boot/dts/qcom/glymur.dtsi
++++ b/arch/arm64/boot/dts/qcom/glymur.dtsi
+@@ -5017,6 +5017,7 @@ &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+ 			tx-fifo-resize;
+ 			snps,dis_u2_susphy_quirk;
+ 			snps,dis_enblslpm_quirk;
++			snps,resume-hs-terminations;
+ 
+ 			usb-role-switch;
+ 			wakeup-source;
+@@ -5107,6 +5108,7 @@ &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+ 			tx-fifo-resize;
+ 			snps,dis_u2_susphy_quirk;
+ 			snps,dis_enblslpm_quirk;
++			snps,resume-hs-terminations;
+ 
+ 			usb-role-switch;
+ 			wakeup-source;
+@@ -5197,6 +5199,7 @@ &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+ 			tx-fifo-resize;
+ 			snps,dis_u2_susphy_quirk;
+ 			snps,dis_enblslpm_quirk;
++			snps,resume-hs-terminations;
+ 
+ 			usb-role-switch;
+ 			wakeup-source;
+@@ -5286,6 +5289,7 @@ &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+ 			tx-fifo-resize;
+ 			snps,dis_u2_susphy_quirk;
+ 			snps,dis_enblslpm_quirk;
++			snps,resume-hs-terminations;
+ 
+ 			maximum-speed = "high-speed";
+ 
+@@ -5375,6 +5379,7 @@ &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+ 			tx-fifo-resize;
+ 			snps,dis_u2_susphy_quirk;
+ 			snps,dis_enblslpm_quirk;
++			snps,resume-hs-terminations;
+ 
+ 			dr_mode = "host";
+ 			wakeup-source;

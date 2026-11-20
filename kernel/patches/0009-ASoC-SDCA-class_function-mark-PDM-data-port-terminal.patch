@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Tue, 20 Oct 2026 07:55:30 +0100
+Subject: [PATCH 09/22] ASoC: SDCA: class_function: mark PDM data-port
+ terminals
+
+snd_sdw_params_to_config() leaves sconfig.type at SDW_STREAM_PCM,
+which is wrong when the DAI is routed to a PDM data-port terminal.
+
+Set sconfig.type to SDW_STREAM_PDM for PDM terminals so the SoundWire
+core sees the right type and does not enforce bps match against the
+PCM-container-width value stamped by the helper.
+
+Assisted-by: LLM
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 700ea16739b4da01fec98076c1b0807705f61a2d)
+---
+ sound/soc/sdca/sdca_class_function.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sound/soc/sdca/sdca_class_function.c b/sound/soc/sdca/sdca_class_function.c
+index 9940e2cf15e7..7887c379d0dd 100644
+--- a/sound/soc/sdca/sdca_class_function.c
++++ b/sound/soc/sdca/sdca_class_function.c
+@@ -142,6 +142,9 @@ static int class_function_sdw_add_peripheral(struct snd_pcm_substream *substream
+ 
+ 	snd_sdw_params_to_config(substream, params, &sconfig, &pconfig);
+ 
++	if (sdca_asoc_dai_is_pdm(drv->function, dai))
++		sconfig.type = SDW_STREAM_PDM;
++
+ 	/*
+ 	 * Defer BPS selection to the per-port values programmed by
+ 	 * qcom_swrm_compute_params() so a single stream can carry ports

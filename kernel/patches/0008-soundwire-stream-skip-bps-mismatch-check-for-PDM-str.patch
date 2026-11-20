@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Tue, 20 Oct 2026 07:55:12 +0100
+Subject: [PATCH 08/22] soundwire: stream: skip bps mismatch check for PDM
+ streams
+
+PDM data-port terminals carry a wire word length defined by the
+stream payload, not by any host-side bps field; the bps declared by
+slave and master need not agree.
+
+Skip the sdw_config_stream() bps mismatch check for SDW_STREAM_PDM.
+Behaviour for SDW_STREAM_PCM and SDW_STREAM_BPT is unchanged.
+
+Assisted-by: LLM
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 63f2632d4d9f835a11841d0058655bfd18ae1578)
+---
+ drivers/soundwire/stream.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/soundwire/stream.c b/drivers/soundwire/stream.c
+index 9da62b5af228..456257058611 100644
+--- a/drivers/soundwire/stream.c
++++ b/drivers/soundwire/stream.c
+@@ -1400,7 +1400,9 @@ static int sdw_config_stream(struct device *dev,
+ 		return -EINVAL;
+ 	}
+ 
+-	if (stream->params.bps && stream_config->bps &&
++	/* PDM streams have no stream-wide bps; skip the match for them. */
++	if (stream_config->type != SDW_STREAM_PDM &&
++	    stream->params.bps && stream_config->bps &&
+ 	    stream->params.bps != stream_config->bps) {
+ 		dev_err(dev, "bps not matching, stream:%s %d vs %d\n",
+ 			stream->name, stream->params.bps, stream_config->bps);

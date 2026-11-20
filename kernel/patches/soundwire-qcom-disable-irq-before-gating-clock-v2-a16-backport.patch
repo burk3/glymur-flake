@@ -1,0 +1,59 @@
+From: Oleg Keri <okerixx@gmail.com>
+Date: Fri,  9 Oct 2026 10:26:39 +0200
+Subject: [PATCH v2] soundwire: qcom: disable the interrupt before gating the
+ clock
+Message-Id: <20261009082639.22662-1-okerixx@gmail.com>
+
+swrm_runtime_suspend() gates hclk straight after the ClockStopNow
+broadcast, while the interrupt thread that completed it is still
+clearing the status and CLK_STOP_FINISHED is about to fire. Both touch
+registers with the clock going away; on x1e80100 and glymur hclk is the
+SoundWire clock itself. The next clock-stop exit then fails at random
+(bus clash, parity errors, AUTO_ENUM_FAILED) and one side of the
+speakers stays detached until reboot.
+
+Disable the interrupt before gating the clock and enable it again once
+the clock is back.
+
+Fixes: 74e79da9fd46 ("soundwire: qcom: add runtime pm support")
+Signed-off-by: Oleg Keri <okerixx@gmail.com>
+Reviewed-by: Dmitry Baryshkov <dmitry.baryshkov@oss.qualcomm.com>
+[ A16 backport, snap2xee: the unmodified posting is
+  soundwire-qcom-disable-irq-before-gating-clock-v2.mbox (patchwork
+  14876178). FixItFoundry's rc5 queue reworked swrm_runtime_resume()
+  (hclk enabled first, checked, and an err_clk path that gates it again),
+  so the hunks don't apply as posted. Same two calls in the same places:
+  enable_irq() right after hclk is enabled on resume, disable_irq() right
+  before hclk is gated on suspend. Plus one disable_irq() in the new
+  err_clk path before it gates hclk, which the posting's base doesn't
+  have; without it a failed resume would leave the IRQ enabled with the
+  clock off and the next resume would unbalance enable_irq(). ]
+---
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 689fb7a76..44450717c 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -2066,6 +2066,7 @@ static int __maybe_unused swrm_runtime_resume(struct device *dev)
+ 	ret = clk_prepare_enable(ctrl->hclk);
+ 	if (ret)
+ 		return ret;
++	enable_irq(ctrl->irq);
+ 
+ 	if (ctrl->wake_irq > 0) {
+ 		if (!irqd_irq_disabled(irq_get_irq_data(ctrl->wake_irq))) {
+@@ -2156,6 +2157,7 @@ static int __maybe_unused swrm_runtime_resume(struct device *dev)
+ 
+ err_clk:
+ 	dev_err(dev, "runtime resume failed: %d\n", ret);
++	disable_irq(ctrl->irq);
+ 	clk_disable_unprepare(ctrl->hclk);
+ 	if (wake_irq_disabled)
+ 		enable_irq(ctrl->wake_irq);
+@@ -2192,6 +2194,7 @@ static int __maybe_unused swrm_runtime_suspend(struct device *dev)
+ 		}
+ 	}
+ 
++	disable_irq(ctrl->irq);
+ 	clk_disable_unprepare(ctrl->hclk);
+ 
+ 	usleep_range(300, 305);

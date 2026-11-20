@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Fri, 25 Sep 2026 16:01:53 +0100
+Subject: [PATCH 03/22] ASoC: SDCA: default reset_max_delay in
+ populate_function path
+
+sdca_parse_function() defaults reset_max_delay to 100ms when the
+DisCo mipi-sdca-function-reset-max-delay property is absent (see
+sdca_functions.c parse_function_extension_id()).  The
+populate_function callback path added for DT/non-DisCo platforms
+does no such thing, so a codec driver that forgets to set
+function->reset_max_delay leaves it at zero.
+
+sdca_reset_function() then calls regmap_read_poll_timeout() with
+timeout_us == 0.  That helper's internal check requires a non-zero
+timeout to break, so the poll spins forever on any hardware that
+does not clear the status bit on the first read.
+
+Guard against this in class_function_probe(): after the callback
+returns success, if reset_max_delay is still zero apply the same
+100ms default the DisCo path uses.  Codec drivers that need a
+different value continue to set it explicitly in their static
+function data.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 8e50032471fad15237e71cc3b75f8beb98aaa5c8)
+---
+ sound/soc/sdca/sdca_class_function.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/sound/soc/sdca/sdca_class_function.c b/sound/soc/sdca/sdca_class_function.c
+index 13b70f0f0dbf..ef9d7667e662 100644
+--- a/sound/soc/sdca/sdca_class_function.c
++++ b/sound/soc/sdca/sdca_class_function.c
+@@ -374,6 +374,16 @@ static int class_function_probe(struct auxiliary_device *auxdev,
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * sdca_parse_function() defaults reset_max_delay to 100ms when
++	 * the DisCo property is absent.  Mirror that here for the
++	 * populate_function path so codec drivers that forget to set it
++	 * do not end up passing 0 to regmap_read_poll_timeout() inside
++	 * sdca_reset_function(), which would spin forever.
++	 */
++	if (!drv->function->reset_max_delay)
++		drv->function->reset_max_delay = 100000;
++
+ 	ndefaults = sdca_regmap_count_constants(dev, drv->function);
+ 	if (ndefaults < 0)
+ 		return ndefaults;

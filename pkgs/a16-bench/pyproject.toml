@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a16-bench"
+dynamic = ["version"]
+description = "Milestone benchmarks for the Zenbook A16 (docs/benchmarks.md)"
+requires-python = ">=3.11"
+dependencies = ["pyyaml"]
+
+[project.scripts]
+a16-bench = "a16_bench.cli:main"
+
+[tool.setuptools]
+packages = ["a16_bench"]
+
+[tool.setuptools.dynamic]
+version = { attr = "a16_bench.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

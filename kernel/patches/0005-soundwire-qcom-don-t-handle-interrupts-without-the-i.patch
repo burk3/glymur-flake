@@ -1,0 +1,87 @@
+From 57c6c1d5263d84accb04983776ba6a0f8df99d75 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 08:32:39 -0700
+Subject: [PATCH 05/11] NOT-FOR-UPSTREAM: soundwire: qcom: don't handle interrupts without the
+ interface clock
+
+qcom_swrm_irq_handler() ignores the return value of
+clk_prepare_enable(ctrl->hclk) and goes on to read and write controller
+registers. hclk is the macro codec's clock output; preparing it
+runtime-resumes the macro and votes its clocks. If that fails, for
+example while runtime PM is disabled during a system sleep transition,
+the controller is not clocked, and on Qualcomm SoCs an unclocked
+register access ends in a NoC error or a silent reset instead of an
+error code.
+
+Return IRQ_NONE when the clock cannot be enabled.
+
+Also bound the handler's re-read loop. A status bit that latches again
+as soon as it is cleared, such as a peripheral that stays in ALERT or a
+bus that keeps clashing, kept the IRQ thread in the loop indefinitely,
+and swrm_runtime_suspend()'s disable_irq() waits for that thread. A new
+event raises the interrupt again after the bail-out.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 31 +++++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index ee5d39f3959a..16ef9d13bfdc 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -146,6 +146,7 @@
+ #define MAX_FIFO_RD_RETRY					3
+ #define SWR_OVERFLOW_RETRY_COUNT				30
+ #define SWRM_LINK_STATUS_RETRY_CNT				100
++#define SWRM_IRQ_MAX_LOOPS					32
+ 
+ enum {
+ 	MASTER_ID_WSA = 1,
+@@ -854,15 +855,41 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
+ 	struct qcom_swrm_ctrl *ctrl = dev_id;
+ 	u32 value, intr_sts, intr_sts_masked, slave_status;
+ 	u32 i;
+-	int devnum;
++	int devnum, loops = 0;
+ 	int ret = IRQ_HANDLED;
+-	clk_prepare_enable(ctrl->hclk);
++
++	/*
++	 * hclk is the WSA/RX/TX macro's clock output, and enabling it
++	 * runtime-resumes that macro. If that fails (runtime PM disabled
++	 * during a system sleep transition, a failed clock vote), the
++	 * controller is not clocked: reading or writing its registers then
++	 * is an unclocked access, which resets the SoC.
++	 */
++	if (clk_prepare_enable(ctrl->hclk)) {
++		dev_err_ratelimited(ctrl->dev,
++				    "%s: interface clock off, interrupt ignored\n",
++				    __func__);
++		return IRQ_NONE;
++	}
+ 
+ 	ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS],
+ 		       &intr_sts);
+ 	intr_sts_masked = intr_sts & ctrl->intr_mask;
+ 
+ 	do {
++		/*
++		 * A source that latches again as soon as it is cleared (a
++		 * peripheral stuck in ALERT, a bus that keeps clashing)
++		 * would keep this thread here forever, and disable_irq()
++		 * on the suspend path would wait for it. Give up after a
++		 * bound; a new event raises the interrupt again.
++		 */
++		if (++loops > SWRM_IRQ_MAX_LOOPS) {
++			dev_err_ratelimited(ctrl->dev,
++					    "%s: interrupt status 0x%x still set after %d passes\n",
++					    __func__, intr_sts, SWRM_IRQ_MAX_LOOPS);
++			break;
++		}
+ 		/*
+ 		 * Acknowledge before handling. Servicing a peripheral alert
+ 		 * makes it go from ALERT back to ATTACHED, which latches

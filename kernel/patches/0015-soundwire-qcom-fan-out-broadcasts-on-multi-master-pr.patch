@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Wed, 9 Sep 2026 21:50:45 +0100
+Subject: [PATCH 15/22] soundwire: qcom: fan out broadcasts on multi-master
+ primary
+
+The primary's HW does not signal SPECIAL_CMD_ID_FINISHED for
+broadcasts on the shared frame. Any SCP_FrameCtrl update sent that
+way is lost, and following unicast reads to the slave time out.
+
+Fan broadcasts out to per-slave unicasts on the primary. This is
+spec-equivalent to a SoundWire broadcast (which writes every attached
+slave) and avoids the broken path.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 74c956dd9339217d9331251bf7e9f603708a4c7a)
+---
+ drivers/soundwire/qcom.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 8ddec69e8163..65d530b3dfbf 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -1464,6 +1464,32 @@ static enum sdw_command_response qcom_swrm_xfer_msg(struct sdw_bus *bus,
+ 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
+ 	int ret, i, len;
+ 
++	/* HW never asserts SPECIAL_CMD_ID_FINISHED for broadcasts here;
++	 * fan out to a unicast per enumerated slave. */
++	if (ctrl->is_primary && msg->dev_num == SDW_BROADCAST_DEV_NUM &&
++	    (msg->addr == SDW_SCP_FRAMECTRL_B0 ||
++	     msg->addr == SDW_SCP_FRAMECTRL_B1)) {
++		struct sdw_slave *slave;
++		enum sdw_command_response resp;
++		u16 orig_dev_num = msg->dev_num;
++
++		list_for_each_entry(slave, &bus->slaves, node) {
++			if (slave->dev_num == SDW_ENUM_DEV_NUM ||
++			    slave->dev_num >= SDW_BROADCAST_DEV_NUM)
++				continue;
++
++			msg->dev_num = slave->dev_num;
++			resp = qcom_swrm_xfer_msg(bus, msg);
++			if (resp != SDW_CMD_OK) {
++				msg->dev_num = orig_dev_num;
++				return resp;
++			}
++		}
++
++		msg->dev_num = orig_dev_num;
++		return SDW_CMD_OK;
++	}
++
+ 	if (msg->page) {
+ 		if (ctrl->page1_cache[msg->dev_num] != msg->addr_page1) {
+ 			ret = qcom_swrm_cmd_fifo_wr_cmd(ctrl, msg->addr_page1,

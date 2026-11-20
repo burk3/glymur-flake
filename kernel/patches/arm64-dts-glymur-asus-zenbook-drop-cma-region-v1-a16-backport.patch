@@ -1,0 +1,45 @@
+From: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Date: Wed, 14 Oct 2026 16:55:44 +0300
+Subject: [PATCH] arm64: dts: qcom: glymur-asus-zenbook: Drop the CMA region
+Message-Id: <20261014-dts-qcom-glymur-asus-drop-cma-v1-1-46f745d5b2d9@oss.qualcomm.com>
+
+The linux,cma reserved-memory region was carried over from the X1E80100
+boards, where it is needed because the PCIe SMMU is reserved (owned by
+the hypervisor) and PCIe devices such as the WCN7850 WLAN end up doing
+DMA to physically contiguous memory.
+
+On Glymur the PCIe SMMU is owned by Linux and the devices behind it are
+attached to translated IOMMU domains, so there is no need for a large
+contiguous DMA pool. Describing a CMA size in the DT is also more of a
+use-case policy than a hardware description. None of the other Glymur
+boards reserve one, so drop it from the two ASUS Zenbooks as well.
+
+Assisted-by: LLM
+Signed-off-by: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Reviewed-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Tested-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com> # Zenbook A16
+[ A16 backport, snap2xee: the unmodified posting is
+  arm64-dts-glymur-asus-zenbook-drop-cma-region-v1.mbox (patchwork
+  14888939). The A14 dts isn't in this tree, so only the A16 hunk is
+  kept (unchanged apart from the line offset). ]
+---
+diff --git a/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts b/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
+index 855f3dc9e..72545cb66 100644
+--- a/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
++++ b/arch/arm64/boot/dts/qcom/glymur-asus-zenbook-a16-ux3607oa.dts
+@@ -361,15 +361,6 @@ vreg_pmu_pcie_1p8: ldo9 {
+ 		};
+ 	};
+ 
+-	reserved-memory {
+-		linux,cma {
+-			compatible = "shared-dma-pool";
+-			size = <0x0 0x10000000>;
+-			reusable;
+-			linux,cma-default;
+-		};
+-	};
+-
+ 	sound {
+ 		compatible = "qcom,glymur-sndcard";
+ 		model = "GLYMUR-ASUS-Zenbook-A16-UX3607OA";

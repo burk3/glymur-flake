@@ -1,0 +1,16 @@
+name		active_count	event_count	wakeup_count	expire_count	active_since	total_time	max_time	last_change	prevent_suspend_time
+2-1         	0		0		0		0		0		0		0		0		0
+mhi0        	0		0		0		0		0		0		0		0		0
+c426000.spmi:pmic@0:pon@1300:pwrkey	0		0		0		0		0		0		0		0		0
+9-0076      	0		0		0		0		0		0		0		0		0
+0004:00:00.0	0		0		0		0		0		0		0		0		0
+c233000.thermal-sensor	0		0		0		0		0		0		0		0		0
+c232000.thermal-sensor	0		0		0		0		0		0		0		0		0
+c231000.thermal-sensor	0		0		0		0		0		0		0		0		0
+c230000.thermal-sensor	0		0		0		0		0		0		0		0		0
+c22f000.thermal-sensor	0		0		0		0		0		0		0		0		0
+c22e000.thermal-sensor	0		0		0		0		0		0		0		0		0
+gpio-keys   	2		2		0		0		0		10		5		3502422		0
+ucsi-source-psy-pmic_glink.ucsi.02	23		49		0		0		0		3		0		3511947		0
+ucsi-source-psy-pmic_glink.ucsi.01	9		20		0		0		0		1		0		3508884		0
+pmic_glink.ucsi.0	43		175		0		43		0		2580		104		3513049		0

@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Mon, 27 Jul 2026 14:47:30 +0100
+Subject: [PATCH 04/22] ASoC: SDCA: class_function: defer BPS to per-port
+ compute_params
+
+snd_sdw_params_to_config() derives a stream-wide BPS from the PCM
+format width and stamps it into sconfig.bps.  For SDCA topologies
+where a single stream carries ports with different wire widths
+(WCD9378 HPH: DP6 2-bit PDM + DP7 8-bit Class-H envelope on the
+same render stream) this stream-wide value would then flow through
+sdw_program_port_params() and overwrite every per-port BPS that
+the master's compute_params() derived from its own DT.
+
+Clear sconfig.bps here so the SoundWire core takes the per-port
+values that qcom_swrm_compute_params() (or any other master) writes
+into p_rt->port_params.bps, and only falls back to the stream-wide
+value when the per-port value was left at zero (per the companion
+sdw_program_port_params() change).
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit 913027a98f24a16870fce0445521684d3d38cef5)
+(cherry picked from commit 61f4c43f4690d95675cc94c6b98ee95d959833ef)
+---
+ sound/soc/sdca/sdca_class_function.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/sound/soc/sdca/sdca_class_function.c b/sound/soc/sdca/sdca_class_function.c
+index ef9d7667e662..9940e2cf15e7 100644
+--- a/sound/soc/sdca/sdca_class_function.c
++++ b/sound/soc/sdca/sdca_class_function.c
+@@ -142,6 +142,14 @@ static int class_function_sdw_add_peripheral(struct snd_pcm_substream *substream
+ 
+ 	snd_sdw_params_to_config(substream, params, &sconfig, &pconfig);
+ 
++	/*
++	 * Defer BPS selection to the per-port values programmed by
++	 * qcom_swrm_compute_params() so a single stream can carry ports
++	 * with different wire widths (e.g. WCD9378 HPH DP6 2-bit PDM +
++	 * DP7 8-bit PCM envelope).
++	 */
++	sconfig.bps = 0;
++
+ 	/*
+ 	 * FIXME: As also noted in sdca_asoc_get_port(), currently only
+ 	 * a single unshared port is supported for each DAI.

@@ -1,0 +1,101 @@
+From 26ca257c1539c5ac4d4a3307f5d324588af6b1c6 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Sat, 24 Oct 2026 01:30:12 -0700
+Subject: [PATCH 3/4] NOT-FOR-UPSTREAM: ASoC: qcom: q6apm: stop DSP graphs on PCM suspend
+
+Neither the q6apm front end nor the LPASS back-end DAIs act on
+SNDRV_PCM_TRIGGER_SUSPEND, while both advertise SNDRV_PCM_INFO_RESUME.
+A stream that is open and running when the system suspends (a sound
+server that keeps the device open, as WirePlumber does with
+session.suspend-timeout-seconds = 0) keeps its graphs running on the
+DSP through s2idle, which keeps LPASS, CX and DDR out of low power.
+
+Stop the front-end graph and the back-end port on SUSPEND and start
+them again on RESUME. A prepare after suspend (instead of RESUME) clears
+the front end's suspended flag, since prepare restarts the graph itself.
+
+This only takes effect when the machine driver lets the PCMs be
+suspended (dai_link->ignore_suspend clear and snd_soc_pm_ops set).
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/qcom/qdsp6/q6apm-dai.c        | 19 ++++++++++++++++++-
+ sound/soc/qcom/qdsp6/q6apm-lpass-dais.c |  8 ++++++++
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6apm-dai.c b/sound/soc/qcom/qdsp6/q6apm-dai.c
+index 033197bdd8..682f5a9e55 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6apm-dai.c
+@@ -81,6 +81,7 @@ struct q6apm_dai_rtd {
+ 	struct q6apm_graph *graph;
+ 	spinlock_t lock;
+ 	bool notify_on_drain;
++	bool graph_suspended;
+ };
+ 
+ struct q6apm_dai_data {
+@@ -242,6 +243,7 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
+ 		q6apm_free_fragments(prtd->graph, substream->stream);
+ 	}
+ 
++	prtd->graph_suspended = false;
+ 	prtd->last_pos_index = 0;
+ 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
+ 	if (q6apm_is_graph_in_push_pull_mode(prtd->graph)) {
+@@ -343,8 +345,14 @@ static int q6apm_dai_trigger(struct snd_soc_component *component,
+ 	int ret = 0;
+ 
+ 	switch (cmd) {
+-	case SNDRV_PCM_TRIGGER_START:
+ 	case SNDRV_PCM_TRIGGER_RESUME:
++		/* Restart the graph stopped for system suspend. */
++		if (prtd->graph_suspended) {
++			prtd->graph_suspended = false;
++			ret = q6apm_graph_start(prtd->graph);
++		}
++		break;
++	case SNDRV_PCM_TRIGGER_START:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+ 		break;
+ 	case SNDRV_PCM_TRIGGER_STOP:
+@@ -354,6 +362,15 @@ static int q6apm_dai_trigger(struct snd_soc_component *component,
+ 		prtd->last_pos_index = 0;
+ 		break;
+ 	case SNDRV_PCM_TRIGGER_SUSPEND:
++		/*
++		 * A started graph keeps the DSP rendering (and LPASS, CX and
++		 * DDR awake) through system suspend; stop it until RESUME.
++		 */
++		if (prtd->state == Q6APM_STREAM_RUNNING && !prtd->graph_suspended) {
++			if (!q6apm_graph_stop(prtd->graph))
++				prtd->graph_suspended = true;
++		}
++		break;
+ 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+ 		break;
+ 	default:
+diff --git a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+index e204fd59e5..c3cb0f3a2c 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
++++ b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+@@ -218,6 +218,14 @@ static int q6apm_lpass_dai_trigger(struct snd_pcm_substream *substream, int cmd,
+ 				dai_data->is_port_started[dai->id] = true;
+ 		}
+ 		break;
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++		/* Stop the port for system suspend; RESUME restarts it. */
++		if (dai_data->is_port_started[dai->id]) {
++			if (q6apm_graph_stop(dai_data->graph[dai->id]) < 0)
++				dev_err(dai->dev, "Failed to stop APM port %d\n", dai->id);
++			dai_data->is_port_started[dai->id] = false;
++		}
++		break;
+ 	default:
+ 		break;
+ 	}
+-- 
+2.54.0
+

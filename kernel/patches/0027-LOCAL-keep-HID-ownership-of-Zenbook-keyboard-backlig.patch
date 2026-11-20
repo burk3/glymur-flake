@@ -1,0 +1,131 @@
+From 52d14c76e198f44732dcde1f9d9e21ddde95f08f Mon Sep 17 00:00:00 2001
+From: Jesse Casco <jesse.casco@gmail.com>
+Date: Wed, 23 Sep 2026 19:00:26 -0400
+Subject: [PATCH] NOT-FOR-UPSTREAM: LOCAL: keep HID ownership of Zenbook keyboard backlight with
+ EC v3
+
+The existing Zenbook HID driver registers asus::kbd_backlight. Omit the competing EC LED registration while retaining the v3 EC hwmon, event, and PM paths.
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+Regenerated on v7.4-rc2: 6cea839b2 dropped the 'depends on THERMAL ||
+THERMAL=n' context line of the Kconfig hunk. The hunk's own change
+(drop select NEW_LEDS/LEDS_CLASS) is unchanged.
+
+ drivers/platform/arm64/Kconfig          |  4 +--
+ drivers/platform/arm64/asus-glymur-ec.c | 45 -------------------------
+ 2 files changed, 1 insertion(+), 48 deletions(-)
+
+diff --git a/drivers/platform/arm64/Kconfig b/drivers/platform/arm64/Kconfig
+index 3f879410b311..6d53a190dae8 100644
+--- a/drivers/platform/arm64/Kconfig
++++ b/drivers/platform/arm64/Kconfig
+@@ -40,12 +40,10 @@ config EC_ASUS_GLYMUR
+ 	depends on HWMON
+ 	depends on INPUT
+ 	depends on PM
+-	select NEW_LEDS
+-	select LEDS_CLASS
+ 	help
+ 	  Say M or Y here to enable the EC driver for the Qualcomm Snapdragon-
+ 	  based ASUS Zenbook A16 (UX3607OA) and similar machines. It provides
+-	  temperature sensors readout, fan monitoring, keyboard and EC event
++	  temperature sensors readout, fan monitoring, and EC event
+ 	  reporting.
+ 
+ config EC_HUAWEI_GAOKUN
+diff --git a/drivers/platform/arm64/asus-glymur-ec.c b/drivers/platform/arm64/asus-glymur-ec.c
+index b741afb18974..df0b4c50cb66 100644
+--- a/drivers/platform/arm64/asus-glymur-ec.c
++++ b/drivers/platform/arm64/asus-glymur-ec.c
+@@ -22,7 +22,6 @@
+ #include <linux/i2c.h>
+ #include <linux/interrupt.h>
+ #include <linux/kernel.h>
+-#include <linux/leds.h>
+ #include <linux/lockdep.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+@@ -60,11 +59,6 @@
+  #define ASUS_EC_MBOX_REG_SUBCMD	0x31
+  #define ASUS_EC_MBOX_REG_DATA		0x32
+ 
+-#define ASUS_EC_MBOX_CMD_KBD		0x01
+- #define ASUS_EC_MBOX_SUBCMD_KBD_EN	0x81
+-  #define ASUS_EC_MBOX_DATA_KBD_EN	0x04
+- #define ASUS_EC_MBOX_SUBCMD_KBD_LVL	0x87
+-
+ #define ASUS_EC_MBOX_CMD_MISC		0x02
+  #define ASUS_EC_MBOX_SUBCMD_MISC_ENABLE	0x83
+ 
+@@ -73,15 +67,6 @@
+  #define ASUS_EC_TEMP_REG_SOC		0x2a
+  #define ASUS_EC_TEMP_MAX		0x7f
+ 
+-#define ASUS_EC_KBD_MAX_BRIGHTNESS	3
+-
+-static const u8 asus_ec_kbd_levels[] = {
+-	[0] = 0x00,
+-	[1] = 0x55,
+-	[2] = 0xaa,
+-	[3] = 0xff,
+-};
+-
+ enum asus_ec_event {
+ 	ASUS_EC_EVT_CHARGE_STATE = 0x1c,
+ 	ASUS_EC_EVT_AC_STATE = 0x1d,
+@@ -99,7 +84,6 @@ struct asus_ec {
+ 	/* Serializes all EC access across both I2C devices */
+ 	struct mutex lock;
+ 	struct device *hwmon_dev;
+-	struct led_classdev kbd_led;
+ };
+ 
+ /* RAM addresses are sent MSB first, while returned data is LSB first. */
+@@ -391,26 +375,6 @@ static irqreturn_t asus_ec_irq(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
+-static int asus_ec_kbd_led_set(struct led_classdev *led,
+-			       enum led_brightness brightness)
+-{
+-	struct asus_ec *ec = container_of(led, struct asus_ec, kbd_led);
+-	int ret;
+-
+-	if (brightness > ASUS_EC_KBD_MAX_BRIGHTNESS)
+-		brightness = ASUS_EC_KBD_MAX_BRIGHTNESS;
+-
+-	guard(mutex)(&ec->lock);
+-
+-	ret = asus_ec_mailbox_cmd(ec, ASUS_EC_MBOX_CMD_KBD, ASUS_EC_MBOX_SUBCMD_KBD_EN,
+-				  ASUS_EC_MBOX_DATA_KBD_EN);
+-	if (ret < 0)
+-		return ret;
+-
+-	return asus_ec_mailbox_cmd(ec, ASUS_EC_MBOX_CMD_KBD, ASUS_EC_MBOX_SUBCMD_KBD_LVL,
+-				   asus_ec_kbd_levels[brightness]);
+-}
+-
+ enum asus_ec_temp_channel {
+ 	/* External sensor? */
+ 	ASUS_EC_TEMP_CPU,
+@@ -538,15 +502,6 @@ static int asus_glymur_ec_probe(struct i2c_client *client)
+ 
+ 	dev_dbg(dev, "ASUS Zenbook EC version %u.%u.%u\n", major, minor, patch);
+ 
+-	ec->kbd_led.name = "asus::kbd_backlight";
+-	ec->kbd_led.max_brightness = ASUS_EC_KBD_MAX_BRIGHTNESS;
+-	ec->kbd_led.brightness_set_blocking = asus_ec_kbd_led_set;
+-	ec->kbd_led.flags = LED_CORE_SUSPENDRESUME;
+-
+-	ret = devm_led_classdev_register(dev, &ec->kbd_led);
+-	if (ret)
+-		return dev_err_probe(dev, ret, "Failed to register keyboard LED\n");
+-
+ 	ret = devm_request_threaded_irq(dev, client->irq, NULL, asus_ec_irq,
+ 					IRQF_ONESHOT, dev_name(dev), ec);
+ 	if (ret)
+-- 
+2.54.0
+

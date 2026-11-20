@@ -1,0 +1,149 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Mon, 26 Oct 2026 22:59:28 -0700
+Subject: [PATCH 2/2] NOT-FOR-UPSTREAM: ASoC: qcom: audioreach: send topology cfg blobs to every
+ module
+
+The topology can attach a static configuration blob to any module
+(SND_SOC_AR_TPLG_MODULE_CFG_TYPE, parsed into mod->data since
+c7ed4c2debfd "ASoC: qcom: audioreach: add support for static
+calibration"), but only SMECNS ever sends it. A topology that places a
+tunable module such as the multi-stage IIR filter (MSIIR), or that
+wants to set the MFC channel mixer coefficients or the SAL limiter
+tuning, gets the module's built-in defaults instead: for MSIIR that is
+a disabled filter, i.e. passthrough.
+
+Send the blob for every module that has one, after the driver's own
+configuration of the module, so the topology can refine it. The blob is
+a list of apm_module_param_data records with 8-byte padded payloads.
+All records are checked first (instance id of this module, bounds), so
+a malformed or mismatched blob fails graph setup without sending any
+part of it, and the stream does not start. Records go out in SET_CFG
+commands of up to 512 bytes, split on record boundaries, as larger GPR
+packets fail on the rpmsg transport (the same limit the speaker
+protection RFC uses for its blobs).
+
+SMECNS keeps sending its blob unchanged, as a single command.
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/qcom/qdsp6/audioreach.c | 97 +++++++++++++++++++++++++++++++
+ 1 file changed, 97 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/audioreach.c b/sound/soc/qcom/qdsp6/audioreach.c
+index 884722b2ed92..36c6044c4565 100644
+--- a/sound/soc/qcom/qdsp6/audioreach.c
++++ b/sound/soc/qcom/qdsp6/audioreach.c
+@@ -1478,6 +1478,95 @@ static int audioreach_speaker_protection_vi(struct q6apm_graph *graph,
+ 	return rc;
+ }
+ 
++/*
++ * Keep each SET_CFG of a cfg blob small: GPR packets much over 2 KiB fail
++ * on the rpmsg transport with -EBUSY. A record larger than this is sent on
++ * its own.
++ */
++#define AR_MODULE_CFG_CHUNK_BYTES	512
++
++static int audioreach_send_module_cfg_chunk(struct q6apm_graph *graph,
++					    const struct audioreach_module *module,
++					    const u8 *data, u32 size)
++{
++	struct gpr_pkt *pkt __free(kfree) = audioreach_alloc_apm_cmd_pkt(size, APM_CMD_SET_CFG, 0);
++	int rc;
++
++	if (IS_ERR(pkt))
++		return PTR_ERR(pkt);
++
++	memcpy((void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE, data, size);
++
++	rc = q6apm_send_cmd_sync(graph->apm, pkt, 0);
++	if (rc)
++		dev_err(graph->dev, "module 0x%08x (iid 0x%x): cfg blob (%u bytes) rejected: %d\n",
++			module->module_id, module->instance_id, size, rc);
++
++	return rc;
++}
++
++/*
++ * Send the static cfg blob a topology attached to a module (mod->data):
++ * a sequence of apm_module_param_data records, each followed by
++ * param_size bytes of payload padded to 8 bytes. Every record must
++ * address this module's instance and lie within the blob, so a blob for
++ * another module or a truncated one is rejected as a whole, before
++ * anything is sent. The records go out in SET_CFG commands split on
++ * record boundaries, in topology order.
++ */
++static int audioreach_send_module_cfg_blob(struct q6apm_graph *graph,
++					   const struct audioreach_module *module)
++{
++	const u8 *blob = (const u8 *)module->data->data;
++	u32 size = le32_to_cpu(module->data->size);
++	u32 pos, start;
++	int rc;
++
++	for (pos = 0; pos < size; ) {
++		const struct apm_module_param_data *rec;
++		u32 psize;
++
++		if (size - pos < APM_MODULE_PARAM_DATA_SIZE)
++			goto malformed;
++
++		rec = (const struct apm_module_param_data *)(blob + pos);
++		psize = rec->param_size;
++		if (rec->module_instance_id != module->instance_id ||
++		    psize > size - pos - APM_MODULE_PARAM_DATA_SIZE ||
++		    ALIGN(psize, 8) > size - pos - APM_MODULE_PARAM_DATA_SIZE)
++			goto malformed;
++
++		pos += APM_MODULE_PARAM_DATA_SIZE + ALIGN(psize, 8);
++	}
++
++	for (pos = 0, start = 0; pos < size; ) {
++		const struct apm_module_param_data *rec;
++		u32 rec_size;
++
++		rec = (const struct apm_module_param_data *)(blob + pos);
++		rec_size = APM_MODULE_PARAM_DATA_SIZE + ALIGN(rec->param_size, 8);
++
++		if (pos > start && pos + rec_size - start > AR_MODULE_CFG_CHUNK_BYTES) {
++			rc = audioreach_send_module_cfg_chunk(graph, module, blob + start,
++							      pos - start);
++			if (rc)
++				return rc;
++			start = pos;
++		}
++		pos += rec_size;
++	}
++
++	if (pos == start)
++		return 0;
++
++	return audioreach_send_module_cfg_chunk(graph, module, blob + start, pos - start);
++
++malformed:
++	dev_err(graph->dev, "module 0x%08x (iid 0x%x): malformed cfg blob at byte %u of %u\n",
++		module->module_id, module->instance_id, pos, size);
++	return -EINVAL;
++}
++
+ int audioreach_set_media_format(struct q6apm_graph *graph,
+ 				const struct audioreach_module *module,
+ 				const struct audioreach_module_config *cfg)
+@@ -1550,6 +1639,14 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
+ 		rc = 0;
+ 	}
+ 
++	/*
++	 * Then the module's static configuration from the topology, so it
++	 * can refine what the driver set up (SMECNS sends its blob whole,
++	 * above).
++	 */
++	if (!rc && module->data && module->module_id != MODULE_ID_SMECNS_V2)
++		rc = audioreach_send_module_cfg_blob(graph, module);
++
+ 	return rc;
+ }
+ EXPORT_SYMBOL_GPL(audioreach_set_media_format);

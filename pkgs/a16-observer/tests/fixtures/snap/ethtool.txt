@@ -1,0 +1,28 @@
+netlink error: Operation not permitted
+Settings for sfp0:
+	Supported ports: [ FIBRE ]
+	Supported link modes:   100baseT/Full
+	                        1000baseT/Full
+	                        10000baseT/Full
+	                        2500baseT/Full
+	                        5000baseT/Full
+	Supported pause frame use: Symmetric Receive-only
+	Supports auto-negotiation: Yes
+	Supported FEC modes: Not reported
+	Advertised link modes:  100baseT/Full
+	                        1000baseT/Full
+	                        10000baseT/Full
+	                        2500baseT/Full
+	                        5000baseT/Full
+	Advertised pause frame use: Symmetric
+	Advertised auto-negotiation: Yes
+	Advertised FEC modes: Not reported
+	Speed: 10000Mb/s
+	Duplex: Full
+	Auto-negotiation: on
+	Port: FIBRE
+	PHYAD: 0
+	Transceiver: internal
+        Current message level: 0x00000005 (5)
+                               drv link
+	Link detected: yes

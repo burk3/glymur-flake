@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+Date: Tue, 8 Sep 2026 11:47:19 +0100
+Subject: [PATCH 13/22] dt-bindings: soundwire: qcom: document
+ qcom,ports-ch-mask
+
+The driver has parsed qcom,ports-ch-mask since commit 386668abb9c4
+("soundwire: qcom: add DT-driven per-port ch_mask
+(qcom,ports-ch-mask)") but the property was never added to the
+schema.  Board DTs that use it currently fail dtbs_check with
+"Unevaluated properties are not allowed".  Document it as an
+optional uint8 array bounded by the same [3..17] port count that
+the other per-port arrays use.
+
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@oss.qualcomm.com>
+(cherry picked from commit d8ef4de40dce78c344f5bf28cd3f5a1ed8a124cf)
+---
+ .../devicetree/bindings/soundwire/qcom,soundwire.yaml | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml b/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml
+index 9250999515b4..2ddd58d85937 100644
+--- a/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml
++++ b/Documentation/devicetree/bindings/soundwire/qcom,soundwire.yaml
+@@ -253,6 +253,17 @@ properties:
+     minimum: 1
+     maximum: 8
+ 
++  qcom,ports-ch-mask:
++    $ref: /schemas/types.yaml#/definitions/uint8-array
++    description:
++      Per-port intrinsic SoundWire channel mask.  Used when programming
++      the master DPn PORT_CTRL channel-enable field so a port's slot
++      layout (e.g. stereo PDM) is transmitted independently of the PCM
++      stream's channel count.  0xff means the option is not applicable
++      for that port.
++    minItems: 3
++    maxItems: 17
++
+   label:
+     maxItems: 1
+ 

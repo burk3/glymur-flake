@@ -1,0 +1,931 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Fri, 23 Oct 2026 23:10:00 +0000
+Subject: [PATCH] NOT-FOR-UPSTREAM: rtc: qcom-glink: use the SoCCP GIO time interface
+
+The SoCCP firmware on production Glymur laptops (ASUS Zenbook A16
+UX3607OA, BIOS 312) does not implement the requests this driver sends.
+Its pmic_glink owner 0x8010 only serves the ACPI Time and Alarm Device
+(TAD) wake timer requests 0x60-0x65 and does not reply to anything
+else, so GET_RTC_TICKS (0x67) and GET_REAL_TIME (0x68) time out. Worse,
+0x63 is TAD _STV and 0x65 is TAD _TIV there: SET_PROPERTY arms a wake
+timer and GET_PROPERTY reads one back.
+
+The firmware keeps the real time in its generic I/O (GIO) service on
+owner 0x8011 instead. Opcode 0x90 reads and 0x91 writes a block of the
+firmware's GIO address space, and the 16-byte TAD real time buffer is
+at 0x30200. The firmware rejects address/length pairs it doesn't know.
+
+Use that. The buffer holds local time plus the TimeZone offset (in
+minutes, daylight saving included), so read_time() returns the time
+plus TimeZone, i.e. UTC. Its Valid byte reads 0 even for a good time,
+so it is ignored. When the RTC loses power the firmware reports
+2025-01-06 without a time zone; read_time() rejects that and anything
+before 2000.
+
+As with rtc-pm8xxx, set_time() is only offered when the pmic-glink node
+has allow-set-time, so that otherwise the NTP sync never writes the
+firmware's clock. It writes UTC with TimeZone 0, Daylight 0 and Valid
+0, which reads back as UTC. The firmware's write status is non-zero
+even for writes that took, so ignore it and read the time back instead.
+
+Drop the alarm support and the wakeup capability for now: the alarm
+requests went to TAD _STV/_TIV with the wrong arguments, and the
+firmware's alarm notification has not been worked out.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/rtc/rtc-qcom-glink.c        | 697 +++++++++-------------------
+ include/linux/soc/qcom/pmic_glink.h |   1 +
+ 2 files changed, 226 insertions(+), 472 deletions(-)
+
+diff --git a/drivers/rtc/rtc-qcom-glink.c b/drivers/rtc/rtc-qcom-glink.c
+index 611f06a..2be4a19 100644
+--- a/drivers/rtc/rtc-qcom-glink.c
++++ b/drivers/rtc/rtc-qcom-glink.c
+@@ -3,63 +3,70 @@
+  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+  */
+ #include <linux/auxiliary_bus.h>
++#include <linux/build_bug.h>
+ #include <linux/completion.h>
+ #include <linux/device.h>
++#include <linux/math.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+-#include <linux/property.h>
+ #include <linux/rtc.h>
+-#include <linux/slab.h>
+ #include <linux/soc/qcom/pdr.h>
+ #include <linux/soc/qcom/pmic_glink.h>
+-#include <linux/timekeeping.h>
+-#include <linux/workqueue.h>
+-
+-#define RTC_GLINK_SET_PROPERTY		0x63
+-#define RTC_GLINK_GET_PROPERTY		0x65
+-#define RTC_GLINK_GET_RTC_TICKS		0x67
+-#define RTC_GLINK_GET_REAL_TIME		0x68
+-#define RTC_GLINK_SET_REAL_TIME		0x69
+-#define RTC_GLINK_ALARM_EXPIRED		0x6A
+-
+-enum qcom_rtc_glink_properties {
+-	QCOM_RTC_GLINK_TIME = 0,
+-	QCOM_RTC_GLINK_ALARM_TIME,
+-	QCOM_RTC_GLINK_ALARM_ENABLE,
+-};
+-
+-struct qcom_rtc_glink_msg {
++#include <linux/spinlock.h>
++#include <linux/string.h>
++
++#define RTC_GLINK_GIO_READ		0x90
++#define RTC_GLINK_GIO_WRITE		0x91
++#define RTC_GLINK_GIO_BUF_SIZE		0x400
++
++/* ACPI TAD real time buffer (_GRT/_SRT) in the SoCCP GIO address space */
++#define RTC_GLINK_TIME_ADDR		0x30200
++
++#define RTC_GLINK_TZ_UNSPECIFIED	0x07ff
++#define RTC_GLINK_TZ_MAX		(24 * 60)
++
++/* How far the read back may be off from the time just written, in seconds */
++#define RTC_GLINK_SET_SLACK		2
++
++struct qcom_rtc_glink_time {
++	__le16	year;
++	u8	month;
++	u8	day;
++	u8	hour;
++	u8	minute;
++	u8	second;
++	u8	valid;
++	__le16	msec;
++	__le16	timezone;
++	u8	daylight;
++	u8	pad[3];
++} __packed;
++
++static_assert(sizeof(struct qcom_rtc_glink_time) == 16);
++
++struct qcom_rtc_glink_gio_req {
+ 	struct pmic_glink_hdr	hdr;
+-	__le32			property;
+-	__le32			value;
++	__le32			reserved;
++	__le32			addr;
++	__le32			len;
+ };
+ 
+-struct qcom_rtc_glink_generic_req {
+-	struct pmic_glink_hdr	hdr;
++struct qcom_rtc_glink_gio_write_req {
++	struct qcom_rtc_glink_gio_req	req;
++	u8				data[RTC_GLINK_GIO_BUF_SIZE];
+ };
+ 
+-struct qcom_rtc_glink_status_resp {
++struct qcom_rtc_glink_gio_read_resp {
+ 	struct pmic_glink_hdr	hdr;
+-	__le32			return_status;
++	u8			data[RTC_GLINK_GIO_BUF_SIZE];
++	__le32			status;
+ };
+ 
+-struct qcom_rtc_glink_ticks_resp {
++struct qcom_rtc_glink_gio_write_resp {
+ 	struct pmic_glink_hdr	hdr;
+-	__le32			return_status;
+-	__le32			rtc_ticks;
+-};
+-
+-struct qcom_rtc_glink_real_time_resp {
+-	struct pmic_glink_hdr	hdr;
+-	__le32			return_status;
+-	__le32			real_time_data[4];
+-};
+-
+-struct qcom_rtc_glink_set_real_time_req {
+-	struct pmic_glink_hdr	hdr;
+-	__le32			real_time_data[4];
++	__le32			status;
+ };
+ 
+ struct qcom_rtc_glink {
+@@ -70,43 +77,42 @@ struct qcom_rtc_glink {
+ 	/* Serializes requests: only one may be in flight at a time */
+ 	struct mutex		lock;
+ 	struct completion	ack;
+-	struct work_struct	alarm_work;
+ 
+-	/* Protects service_up and request_pending across callback contexts */
++	/* Protects service_up, request_pending and the response fields */
+ 	spinlock_t		state_lock;
+ 	bool			service_up;
+ 	bool			request_pending;
+ 
++	u32			opcode;
+ 	int			error;
+-	u32			resp_value;
+-	u32			offset;
+-	struct rtc_time		resp_tm;
+-	bool			resp_valid;
+-	bool			allow_set_time;
++	struct qcom_rtc_glink_time resp_time;
++
++	struct qcom_rtc_glink_gio_write_req write_req;
+ };
+ 
+ static int qcom_rtc_glink_request(struct qcom_rtc_glink *rtc_glink,
+ 				  void *data, size_t len)
+ {
++	struct pmic_glink_hdr *hdr = data;
+ 	unsigned long flags;
+ 	unsigned long left;
+ 	int ret;
+ 
+ 	/*
+ 	 * Reinit the completion before request_pending becomes visible to
+-	 * qcom_rtc_glink_pdr_tify(), so a concurrent SSR down-transition
++	 * qcom_rtc_glink_pdr_notify(), so a concurrent SSR down-transition
+ 	 * can't complete() a stale completion that gets wiped out by
+ 	 * reinit_completion() right after.
+ 	 */
+ 	reinit_completion(&rtc_glink->ack);
+-	rtc_glink->error = 0;
+-	rtc_glink->resp_valid = false;
+ 
+ 	spin_lock_irqsave(&rtc_glink->state_lock, flags);
+ 	if (!rtc_glink->service_up) {
+ 		spin_unlock_irqrestore(&rtc_glink->state_lock, flags);
+ 		return -ECONNRESET;
+ 	}
++	rtc_glink->opcode = le32_to_cpu(hdr->opcode);
++	rtc_glink->error = -EIO;
+ 	rtc_glink->request_pending = true;
+ 	spin_unlock_irqrestore(&rtc_glink->state_lock, flags);
+ 
+@@ -128,429 +134,102 @@ static int qcom_rtc_glink_request(struct qcom_rtc_glink *rtc_glink,
+ 	return rtc_glink->error;
+ }
+ 
+-static int qcom_rtc_glink_set_property(struct qcom_rtc_glink *rtc_glink,
+-				       u32 property, u32 value)
++static int qcom_rtc_glink_get(struct qcom_rtc_glink *rtc_glink,
++			      struct qcom_rtc_glink_time *t)
+ {
+-	struct qcom_rtc_glink_msg msg = {
+-		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_RTC),
++	struct qcom_rtc_glink_gio_req req = {
++		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_GIO),
+ 		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+-		.hdr.opcode = cpu_to_le32(RTC_GLINK_SET_PROPERTY),
+-		.property = cpu_to_le32(property),
+-		.value = cpu_to_le32(value),
++		.hdr.opcode = cpu_to_le32(RTC_GLINK_GIO_READ),
++		.addr = cpu_to_le32(RTC_GLINK_TIME_ADDR),
++		.len = cpu_to_le32(sizeof(*t)),
+ 	};
+ 	int ret;
+ 
+-	dev_dbg(rtc_glink->dev,
+-		"TX opcode=0x%x property=%u value=%u\n",
+-		RTC_GLINK_SET_PROPERTY, property, value);
+ 	mutex_lock(&rtc_glink->lock);
+-	ret = qcom_rtc_glink_request(rtc_glink, &msg, sizeof(msg));
+-	mutex_unlock(&rtc_glink->lock);
+-	return ret;
+-}
+-
+-static int qcom_rtc_glink_get_property(struct qcom_rtc_glink *rtc_glink,
+-				       u32 property, u32 *value)
+-{
+-	struct qcom_rtc_glink_msg msg = {
+-		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_RTC),
+-		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+-		.hdr.opcode = cpu_to_le32(RTC_GLINK_GET_PROPERTY),
+-		.property = cpu_to_le32(property),
+-	};
+-	int ret;
+-
+-	dev_dbg(rtc_glink->dev,
+-		"TX opcode=0x%x property=%u\n",
+-		RTC_GLINK_GET_PROPERTY, property);
+-	mutex_lock(&rtc_glink->lock);
+-	ret = qcom_rtc_glink_request(rtc_glink, &msg, sizeof(msg));
+-	if (!ret) {
+-		if (!rtc_glink->resp_valid)
+-			ret = -EIO;
+-		else
+-			*value = rtc_glink->resp_value;
+-	}
++	ret = qcom_rtc_glink_request(rtc_glink, &req, sizeof(req));
++	if (!ret)
++		*t = rtc_glink->resp_time;
+ 	mutex_unlock(&rtc_glink->lock);
+-	return ret;
+-}
+-
+-static int qcom_rtc_glink_get_ticks(struct qcom_rtc_glink *rtc_glink,
+-				    u32 *ticks)
+-{
+-	struct qcom_rtc_glink_generic_req msg = {
+-		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_RTC),
+-		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+-		.hdr.opcode = cpu_to_le32(RTC_GLINK_GET_RTC_TICKS),
+-	};
+-	int ret;
+ 
+-	dev_dbg(rtc_glink->dev, "TX opcode=0x%x\n", RTC_GLINK_GET_RTC_TICKS);
+-	mutex_lock(&rtc_glink->lock);
+-	ret = qcom_rtc_glink_request(rtc_glink, &msg, sizeof(msg));
+-	if (!ret) {
+-		if (!rtc_glink->resp_valid)
+-			ret = -EIO;
+-		else
+-			*ticks = rtc_glink->resp_value;
+-	}
+-	mutex_unlock(&rtc_glink->lock);
+ 	return ret;
+ }
+ 
+-static int qcom_rtc_glink_get_real_time(struct qcom_rtc_glink *rtc_glink,
+-					struct rtc_time *tm)
++static int qcom_rtc_glink_put(struct qcom_rtc_glink *rtc_glink,
++			      const struct qcom_rtc_glink_time *t)
+ {
+-	struct qcom_rtc_glink_generic_req msg = {
+-		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_RTC),
+-		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+-		.hdr.opcode = cpu_to_le32(RTC_GLINK_GET_REAL_TIME),
+-	};
++	struct qcom_rtc_glink_gio_write_req *req = &rtc_glink->write_req;
+ 	int ret;
+ 
+-	dev_dbg(rtc_glink->dev, "TX opcode=0x%x\n", RTC_GLINK_GET_REAL_TIME);
+ 	mutex_lock(&rtc_glink->lock);
+-	ret = qcom_rtc_glink_request(rtc_glink, &msg, sizeof(msg));
+-	if (!ret) {
+-		if (!rtc_glink->resp_valid)
+-			ret = -EIO;
+-		else
+-			*tm = rtc_glink->resp_tm;
+-	}
++	memset(req, 0, sizeof(*req));
++	req->req.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_GIO);
++	req->req.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP);
++	req->req.hdr.opcode = cpu_to_le32(RTC_GLINK_GIO_WRITE);
++	req->req.addr = cpu_to_le32(RTC_GLINK_TIME_ADDR);
++	req->req.len = cpu_to_le32(sizeof(*t));
++	memcpy(req->data, t, sizeof(*t));
++	ret = qcom_rtc_glink_request(rtc_glink, req, sizeof(*req));
+ 	mutex_unlock(&rtc_glink->lock);
+-	return ret;
+-}
+ 
+-static int qcom_rtc_glink_set_real_time(struct qcom_rtc_glink *rtc_glink,
+-					struct rtc_time *tm)
+-{
+-	struct qcom_rtc_glink_set_real_time_req msg = {};
+-	u32 w0, w1;
+-	int ret;
+-
+-	w0 = ((tm->tm_year + 1900) & 0xffff) |
+-	     (((tm->tm_mon + 1) & 0xff) << 16) |
+-	     ((tm->tm_mday & 0xff) << 24);
+-	w1 = (tm->tm_hour & 0xff) |
+-	     ((tm->tm_min & 0xff) << 8) |
+-	     ((tm->tm_sec & 0xff) << 16) |
+-	     (1U << 24);
+-	msg.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_RTC);
+-	msg.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP);
+-	msg.hdr.opcode = cpu_to_le32(RTC_GLINK_SET_REAL_TIME);
+-	msg.real_time_data[0] = cpu_to_le32(w0);
+-	msg.real_time_data[1] = cpu_to_le32(w1);
+-	msg.real_time_data[2] = 0;
+-	msg.real_time_data[3] = 0;
+-	dev_dbg(rtc_glink->dev,
+-		"TX opcode=0x%x data=%08x %08x\n",
+-		RTC_GLINK_SET_REAL_TIME, w0, w1);
+-	mutex_lock(&rtc_glink->lock);
+-	ret = qcom_rtc_glink_request(rtc_glink, &msg, sizeof(msg));
+-	mutex_unlock(&rtc_glink->lock);
+ 	return ret;
+ }
+ 
+-static int qcom_rtc_glink_get_time(struct qcom_rtc_glink *rtc_glink,
+-				   struct rtc_time *time)
+-{
+-	u32 ticks;
+-	int ret;
+-
+-	ret = qcom_rtc_glink_get_real_time(rtc_glink, time);
+-	if (!ret)
+-		return 0;
+-	dev_warn(rtc_glink->dev, "0x68 failed (%d), falling back\n", ret);
+-
+-	ret = qcom_rtc_glink_get_ticks(rtc_glink, &ticks);
+-	if (!ret) {
+-		rtc_time64_to_tm((time64_t)ticks + rtc_glink->offset, time);
+-		return 0;
+-	}
+-
+-	ret = qcom_rtc_glink_get_property(rtc_glink, QCOM_RTC_GLINK_TIME,
+-					  &ticks);
+-	if (!ret && ticks != U32_MAX) {
+-		rtc_time64_to_tm((time64_t)ticks + rtc_glink->offset, time);
+-		return 0;
+-	}
+-
+-	dev_err(rtc_glink->dev, "all time sources failed\n");
+-	return -EIO;
+-}
+-
+-static int qcom_rtc_glink_set_time(struct qcom_rtc_glink *rtc_glink,
+-				   struct rtc_time *time)
+-{
+-	time64_t t = rtc_tm_to_time64(time);
+-	u32 ticks;
+-	int ret;
+-
+-	if (!rtc_glink->allow_set_time)
+-		return -EOPNOTSUPP;
+-
+-	ret = qcom_rtc_glink_set_real_time(rtc_glink, time);
+-	if (ret)
+-		dev_warn(rtc_glink->dev, "0x69 failed (%d)\n", ret);
+-
+-	ret = qcom_rtc_glink_set_property(rtc_glink, QCOM_RTC_GLINK_TIME, (u32)t);
+-	if (ret)
+-		return ret;
+-
+-	ret = qcom_rtc_glink_get_ticks(rtc_glink, &ticks);
+-	if (!ret && ticks != U32_MAX) {
+-		rtc_glink->offset = (u32)t - ticks;
+-	} else {
+-		dev_warn(rtc_glink->dev, "no tick source for offset\n");
+-		return -EIO;
+-	}
+-
+-	return 0;
+-}
+-
+-static int qcom_rtc_glink_set_alarm_en(struct qcom_rtc_glink *rtc_glink,
+-				       int enabled)
+-{
+-	return qcom_rtc_glink_set_property(rtc_glink,
+-					   QCOM_RTC_GLINK_ALARM_ENABLE,
+-					   enabled);
+-}
+-
+-static int qcom_rtc_glink_set_alarm(struct qcom_rtc_glink *rtc_glink,
+-				    struct rtc_wkalrm *alarm)
+-{
+-	time64_t alarm_t = rtc_tm_to_time64(&alarm->time);
+-	struct rtc_time now_tm;
+-	time64_t now_real, secs_until_alarm;
+-	u32 fw_current, fw_alarm;
+-	int ret;
+-
+-	ret = qcom_rtc_glink_get_time(rtc_glink, &now_tm);
+-	if (ret)
+-		return ret;
+-	now_real = rtc_tm_to_time64(&now_tm);
+-	secs_until_alarm = alarm_t - now_real;
+-	dev_dbg(rtc_glink->dev,
+-		"set_alarm: now_real=%lld alarm_t=%lld delta=%lld\n",
+-		now_real, alarm_t, secs_until_alarm);
+-	if (secs_until_alarm < 0)
+-		return -EINVAL;
+-	if (secs_until_alarm > U32_MAX)
+-		return -ERANGE;
+-
+-	ret = qcom_rtc_glink_get_property(rtc_glink, QCOM_RTC_GLINK_TIME,
+-					  &fw_current);
+-	if (ret)
+-		return ret;
+-	if (fw_current == U32_MAX)
+-		fw_current = 0;
+-	fw_alarm = fw_current + (u32)secs_until_alarm;
+-	dev_dbg(rtc_glink->dev,
+-		"set_alarm: fw_current=%u fw_alarm=%u\n",
+-		fw_current, fw_alarm);
+-
+-	ret = qcom_rtc_glink_set_alarm_en(rtc_glink, 0);
+-	if (ret)
+-		return ret;
+-
+-	ret = qcom_rtc_glink_set_property(rtc_glink,
+-					  QCOM_RTC_GLINK_ALARM_TIME, fw_alarm);
+-	if (ret)
+-		return ret;
+-
+-	return qcom_rtc_glink_set_alarm_en(rtc_glink, alarm->enabled);
+-}
+-
+-static int qcom_rtc_glink_get_alarm(struct qcom_rtc_glink *rtc_glink,
+-				    struct rtc_wkalrm *alarm)
+-{
+-	u32 fw_alarm_time, fw_current, alarm_en;
+-	struct rtc_time now_tm;
+-	time64_t now_real, secs_until_alarm, alarm_real;
+-	int ret;
+-
+-	ret = qcom_rtc_glink_get_property(rtc_glink,
+-					  QCOM_RTC_GLINK_ALARM_TIME,
+-					  &fw_alarm_time);
+-	if (ret)
+-		return ret;
+-
+-	ret = qcom_rtc_glink_get_property(rtc_glink, QCOM_RTC_GLINK_TIME,
+-					  &fw_current);
+-	if (ret)
+-		return ret;
+-
+-	ret = qcom_rtc_glink_get_property(rtc_glink,
+-					  QCOM_RTC_GLINK_ALARM_ENABLE,
+-					  &alarm_en);
+-	if (ret)
+-		return ret;
+-	if (fw_current == U32_MAX)
+-		fw_current = 0;
+-
+-	ret = qcom_rtc_glink_get_time(rtc_glink, &now_tm);
+-	if (ret)
+-		return ret;
+-	now_real = rtc_tm_to_time64(&now_tm);
+-	secs_until_alarm = (time64_t)fw_alarm_time - (time64_t)fw_current;
+-	alarm_real = now_real + secs_until_alarm;
+-	dev_dbg(rtc_glink->dev,
+-		"get_alarm: now_real=%lld fw_current=%u fw_alarm=%u delta=%lld\n",
+-		now_real, fw_current, fw_alarm_time, secs_until_alarm);
+-	rtc_time64_to_tm(alarm_real, &alarm->time);
+-	alarm->enabled = !!alarm_en;
+-	return 0;
+-}
+-
+-static void qcom_rtc_glink_alarm_work(struct work_struct *work)
+-{
+-	struct qcom_rtc_glink *rtc_glink =
+-		container_of(work, struct qcom_rtc_glink, alarm_work);
+-	int ret;
+-
+-	ret = qcom_rtc_glink_set_alarm_en(rtc_glink, 0);
+-	if (ret)
+-		dev_err(rtc_glink->dev,
+-			"failed to disable alarm after expiry (%d)\n", ret);
+-	rtc_update_irq(rtc_glink->rtc, 1, RTC_IRQF | RTC_AF);
+-}
+-
+ static void qcom_rtc_glink_callback(const void *data, size_t len, void *priv)
+ {
+ 	struct qcom_rtc_glink *rtc_glink = priv;
+ 	const struct pmic_glink_hdr *hdr = data;
+ 	unsigned long flags;
+-	bool pending;
++	u32 opcode;
++	int err;
+ 
+ 	if (len < sizeof(*hdr))
+ 		return;
+ 
+-	dev_dbg(rtc_glink->dev,
+-		"RX opcode=0x%x type=0x%x owner=0x%x len=%zu\n",
+-		le32_to_cpu(hdr->opcode), le32_to_cpu(hdr->type),
+-		le32_to_cpu(hdr->owner), len);
+-
+-	if (le32_to_cpu(hdr->opcode) == RTC_GLINK_ALARM_EXPIRED) {
+-		dev_info(rtc_glink->dev, "alarm expired\n");
+-		schedule_work(&rtc_glink->alarm_work);
+-		return;
+-	}
++	opcode = le32_to_cpu(hdr->opcode);
+ 
+ 	/*
+-	 * Hold state_lock across the pending check and the response fields
+-	 * below: qcom_rtc_glink_pdr_notify() writes the same error/resp_*
+-	 * fields under this lock when it force-completes a request on an
+-	 * SSR down-transition, and the two must not race. Dropping the
+-	 * response here if !pending also covers requests that already
+-	 * timed out or were aborted; qcom_rtc_glink_request() will call
+-	 * reinit_completion() again before this response could be mistaken
+-	 * for a later request's.
++	 * Drop anything that is not the reply to the request in flight,
++	 * including replies to requests that already timed out.
+ 	 */
+ 	spin_lock_irqsave(&rtc_glink->state_lock, flags);
+-	pending = rtc_glink->request_pending;
+-
+-	if (!pending) {
++	if (!rtc_glink->request_pending || opcode != rtc_glink->opcode) {
+ 		spin_unlock_irqrestore(&rtc_glink->state_lock, flags);
+-		dev_dbg(rtc_glink->dev,
+-			"dropping stale response opcode=0x%x\n",
+-			le32_to_cpu(hdr->opcode));
++		dev_dbg(rtc_glink->dev, "dropping message opcode=0x%x len=%zu\n",
++			opcode, len);
+ 		return;
+ 	}
+ 
+-	switch (le32_to_cpu(hdr->opcode)) {
+-	case RTC_GLINK_GET_PROPERTY:
+-		fallthrough;
+-	case RTC_GLINK_SET_PROPERTY: {
+-		const struct qcom_rtc_glink_msg *msg = data;
+-
+-		if (len < sizeof(struct pmic_glink_hdr) + sizeof(__le32)) {
+-			rtc_glink->error = -EINVAL;
+-			break;
+-		}
+-		rtc_glink->resp_value = le32_to_cpu(msg->property);
+-		rtc_glink->resp_valid = true;
+-		rtc_glink->error = 0;
+-		dev_dbg(rtc_glink->dev, "ACK opcode=0x%x resp_value=%u\n",
+-			le32_to_cpu(hdr->opcode), rtc_glink->resp_value);
+-		break;
+-	}
+-
+-	case RTC_GLINK_GET_RTC_TICKS: {
+-		const struct qcom_rtc_glink_ticks_resp *resp = data;
+-
+-		if (len < sizeof(*resp)) {
+-			rtc_glink->error = -EINVAL;
+-			break;
+-		}
+-		if (le32_to_cpu(resp->return_status)) {
+-			rtc_glink->error = -EIO;
+-			break;
+-		}
+-		rtc_glink->resp_value = le32_to_cpu(resp->rtc_ticks);
+-		rtc_glink->resp_valid = true;
+-		rtc_glink->error = 0;
+-		dev_dbg(rtc_glink->dev, "ACK opcode=0x%x ticks=%u\n",
+-			RTC_GLINK_GET_RTC_TICKS, rtc_glink->resp_value);
+-		break;
+-	}
+-
+-	case RTC_GLINK_GET_REAL_TIME: {
+-		const struct qcom_rtc_glink_real_time_resp *resp = data;
+-		u32 w0, w1;
++	if (opcode == RTC_GLINK_GIO_READ) {
++		const struct qcom_rtc_glink_gio_read_resp *resp = data;
+ 
+ 		if (len < sizeof(*resp)) {
+-			rtc_glink->error = -EINVAL;
+-			break;
++			err = -EBADMSG;
++		} else if (le32_to_cpu(resp->status)) {
++			err = -EIO;
++		} else {
++			memcpy(&rtc_glink->resp_time, resp->data,
++			       sizeof(rtc_glink->resp_time));
++			err = 0;
+ 		}
+-		if (le32_to_cpu(resp->return_status)) {
+-			rtc_glink->error = -EIO;
+-			break;
+-		}
+-		w0 = le32_to_cpu(resp->real_time_data[0]);
+-		w1 = le32_to_cpu(resp->real_time_data[1]);
+-		rtc_glink->resp_tm.tm_year = (w0 & 0xffff) - 1900;
+-		rtc_glink->resp_tm.tm_mon = ((w0 >> 16) & 0xff) - 1;
+-		rtc_glink->resp_tm.tm_mday = (w0 >> 24) & 0xff;
+-		rtc_glink->resp_tm.tm_hour = w1 & 0xff;
+-		rtc_glink->resp_tm.tm_min = (w1 >> 8) & 0xff;
+-		rtc_glink->resp_tm.tm_sec = (w1 >> 16) & 0xff;
+-		rtc_glink->resp_valid = true;
+-		rtc_glink->error = 0;
+-		dev_dbg(rtc_glink->dev,
+-			"ACK opcode=0x%x %04d-%02d-%02d %02d:%02d:%02d\n",
+-			RTC_GLINK_GET_REAL_TIME,
+-			rtc_glink->resp_tm.tm_year + 1900,
+-			rtc_glink->resp_tm.tm_mon + 1,
+-			rtc_glink->resp_tm.tm_mday,
+-			rtc_glink->resp_tm.tm_hour,
+-			rtc_glink->resp_tm.tm_min,
+-			rtc_glink->resp_tm.tm_sec);
+-		break;
+-	}
+-
+-	case RTC_GLINK_SET_REAL_TIME: {
+-		const struct qcom_rtc_glink_status_resp *resp = data;
++	} else {
++		const struct qcom_rtc_glink_gio_write_resp *resp = data;
+ 
++		/* The status is unreliable, set_time() reads the time back */
+ 		if (len < sizeof(*resp)) {
+-			rtc_glink->error = -EINVAL;
+-			break;
++			err = -EBADMSG;
++		} else {
++			dev_dbg(rtc_glink->dev, "write status 0x%x\n",
++				le32_to_cpu(resp->status));
++			err = 0;
+ 		}
+-		rtc_glink->error = le32_to_cpu(resp->return_status) ? -EIO : 0;
+-		dev_dbg(rtc_glink->dev, "ACK opcode=0x%x status=%u\n",
+-			RTC_GLINK_SET_REAL_TIME,
+-			le32_to_cpu(resp->return_status));
+-		break;
+ 	}
++	rtc_glink->error = err;
++	spin_unlock_irqrestore(&rtc_glink->state_lock, flags);
+ 
+-	default:
+-		spin_unlock_irqrestore(&rtc_glink->state_lock, flags);
+-		dev_warn(rtc_glink->dev,
+-			 "unhandled RX opcode=0x%x len=%zu\n",
+-			 le32_to_cpu(hdr->opcode), len);
+-		return;
+-	}
++	if (err)
++		dev_dbg(rtc_glink->dev, "opcode 0x%x failed: %d\n", opcode, err);
+ 
+-	spin_unlock_irqrestore(&rtc_glink->state_lock, flags);
+ 	complete(&rtc_glink->ack);
+ }
+ 
+@@ -564,46 +243,130 @@ static void qcom_rtc_glink_pdr_notify(void *priv, int state)
+ 	rtc_glink->service_up = up;
+ 	if (!up && rtc_glink->request_pending) {
+ 		rtc_glink->error = -ECONNRESET;
+-		rtc_glink->resp_valid = false;
+ 		complete(&rtc_glink->ack);
+ 	}
+ 	spin_unlock_irqrestore(&rtc_glink->state_lock, flags);
+ }
+ 
+-static int qcom_rtc_glink_read_time(struct device *dev, struct rtc_time *tm)
++/*
++ * The buffer holds local time, and TimeZone is the offset to UTC in minutes
++ * (UTC = local time + TimeZone, Daylight already included), or
++ * RTC_GLINK_TZ_UNSPECIFIED. The Valid byte is not maintained: the firmware
++ * and UEFI SetTime() leave it 0 with a good time.
++ */
++static int qcom_rtc_glink_to_time64(struct device *dev,
++				    const struct qcom_rtc_glink_time *t,
++				    time64_t *secs)
+ {
+-	return qcom_rtc_glink_get_time(dev_get_drvdata(dev), tm);
+-}
++	u16 year = le16_to_cpu(t->year);
++	u16 tz = le16_to_cpu(t->timezone);
++	struct rtc_time tm = {
++		.tm_year = year - 1900,
++		.tm_mon = t->month - 1,
++		.tm_mday = t->day,
++		.tm_hour = t->hour,
++		.tm_min = t->minute,
++		.tm_sec = t->second,
++	};
++	s16 offset = tz;
+ 
+-static int qcom_rtc_glink_set_time_dev(struct device *dev, struct rtc_time *tm)
+-{
+-	return qcom_rtc_glink_set_time(dev_get_drvdata(dev), tm);
+-}
++	/*
++	 * When the RTC loses its time, UEFI turns the reset value into
++	 * 2025-01-06 without a time zone. Treat that as not set.
++	 */
++	if (year < 2000 ||
++	    (year == 2025 && t->month == 1 && t->day == 6 &&
++	     (tz == 0 || tz == RTC_GLINK_TZ_UNSPECIFIED))) {
++		dev_warn_once(dev, "RTC not set: %*ph\n", (int)sizeof(*t), t);
++		return -EINVAL;
++	}
+ 
+-static int qcom_rtc_glink_read_alarm(struct device *dev,
+-				     struct rtc_wkalrm *alrm)
+-{
+-	return qcom_rtc_glink_get_alarm(dev_get_drvdata(dev), alrm);
++	if (rtc_valid_tm(&tm))
++		return -EINVAL;
++
++	*secs = rtc_tm_to_time64(&tm);
++	if (tz == RTC_GLINK_TZ_UNSPECIFIED)
++		return 0;
++
++	if (offset < -RTC_GLINK_TZ_MAX || offset > RTC_GLINK_TZ_MAX)
++		return -EINVAL;
++
++	*secs += offset * 60;
++
++	return 0;
+ }
+ 
+-static int qcom_rtc_glink_set_alarm_dev(struct device *dev,
+-					struct rtc_wkalrm *alrm)
++static int qcom_rtc_glink_read_time(struct device *dev, struct rtc_time *tm)
+ {
+-	return qcom_rtc_glink_set_alarm(dev_get_drvdata(dev), alrm);
++	struct qcom_rtc_glink *rtc_glink = dev_get_drvdata(dev);
++	struct qcom_rtc_glink_time t;
++	time64_t secs;
++	int ret;
++
++	ret = qcom_rtc_glink_get(rtc_glink, &t);
++	if (ret)
++		return ret;
++
++	dev_dbg(dev, "read %*ph\n", (int)sizeof(t), &t);
++
++	ret = qcom_rtc_glink_to_time64(dev, &t, &secs);
++	if (ret)
++		return ret;
++
++	rtc_time64_to_tm(secs, tm);
++
++	return 0;
+ }
+ 
+-static int qcom_rtc_glink_alarm_irq_enable(struct device *dev,
+-					   unsigned int enabled)
++/* Store UTC with TimeZone 0, so that reading it back gives UTC as well */
++static int qcom_rtc_glink_set_time(struct device *dev, struct rtc_time *tm)
+ {
+-	return qcom_rtc_glink_set_alarm_en(dev_get_drvdata(dev), enabled);
++	struct qcom_rtc_glink *rtc_glink = dev_get_drvdata(dev);
++	struct qcom_rtc_glink_time t = {
++		.year = cpu_to_le16(tm->tm_year + 1900),
++		.month = tm->tm_mon + 1,
++		.day = tm->tm_mday,
++		.hour = tm->tm_hour,
++		.minute = tm->tm_min,
++		.second = tm->tm_sec,
++	};
++	time64_t secs = rtc_tm_to_time64(tm);
++	time64_t now;
++	int ret;
++
++	dev_dbg(dev, "write %*ph\n", (int)sizeof(t), &t);
++
++	ret = qcom_rtc_glink_put(rtc_glink, &t);
++	if (ret)
++		return ret;
++
++	/*
++	 * The firmware's write status is not reliable (it reports failure for
++	 * writes that took), so read the time back instead.
++	 */
++	ret = qcom_rtc_glink_get(rtc_glink, &t);
++	if (ret)
++		return ret;
++
++	dev_dbg(dev, "read back %*ph\n", (int)sizeof(t), &t);
++
++	ret = qcom_rtc_glink_to_time64(dev, &t, &now);
++	if (ret || abs(now - secs) > RTC_GLINK_SET_SLACK) {
++		dev_err_ratelimited(dev, "time write did not take: %*ph\n",
++				    (int)sizeof(t), &t);
++		return -EIO;
++	}
++
++	return 0;
+ }
+ 
+-static const struct rtc_class_ops qcom_rtc_glink_rtc_ops = {
++static const struct rtc_class_ops qcom_rtc_glink_ro_ops = {
+ 	.read_time = qcom_rtc_glink_read_time,
+-	.set_time = qcom_rtc_glink_set_time_dev,
+-	.read_alarm = qcom_rtc_glink_read_alarm,
+-	.set_alarm = qcom_rtc_glink_set_alarm_dev,
+-	.alarm_irq_enable = qcom_rtc_glink_alarm_irq_enable,
++};
++
++static const struct rtc_class_ops qcom_rtc_glink_rw_ops = {
++	.read_time = qcom_rtc_glink_read_time,
++	.set_time = qcom_rtc_glink_set_time,
+ };
+ 
+ static const struct of_device_id qcom_rtc_glink_of_variants[] = {
+@@ -624,18 +387,15 @@ static int qcom_rtc_glink_probe(struct auxiliary_device *adev,
+ 	if (!rtc_glink)
+ 		return -ENOMEM;
+ 
+-	rtc_glink->dev            = dev;
+-	rtc_glink->allow_set_time = device_property_read_bool(dev->parent,
+-							      "allow-set-time");
++	rtc_glink->dev = dev;
+ 
+ 	mutex_init(&rtc_glink->lock);
+ 	spin_lock_init(&rtc_glink->state_lock);
+ 	init_completion(&rtc_glink->ack);
+-	INIT_WORK(&rtc_glink->alarm_work, qcom_rtc_glink_alarm_work);
+ 	dev_set_drvdata(dev, rtc_glink);
+ 
+ 	rtc_glink->client = devm_pmic_glink_client_alloc(dev,
+-							 PMIC_GLINK_OWNER_RTC,
++							 PMIC_GLINK_OWNER_GIO,
+ 							 qcom_rtc_glink_callback,
+ 							 qcom_rtc_glink_pdr_notify,
+ 							 rtc_glink);
+@@ -645,30 +405,24 @@ static int qcom_rtc_glink_probe(struct auxiliary_device *adev,
+ 
+ 	pmic_glink_client_register(rtc_glink->client);
+ 
+-	device_init_wakeup(dev, true);
+-
+ 	rtc_glink->rtc = devm_rtc_allocate_device(dev);
+ 	if (IS_ERR(rtc_glink->rtc))
+ 		return dev_err_probe(dev, PTR_ERR(rtc_glink->rtc),
+ 				     "failed to allocate RTC device\n");
+ 
+-	rtc_glink->rtc->ops      = &qcom_rtc_glink_rtc_ops;
+-	rtc_glink->rtc->range_min = 0;
+-	rtc_glink->rtc->range_max = U32_MAX;
+-
+-	return devm_rtc_register_device(rtc_glink->rtc);
+-}
+-
+-static void qcom_rtc_glink_remove(struct auxiliary_device *adev)
+-{
+-	struct qcom_rtc_glink *rtc_glink = dev_get_drvdata(&adev->dev);
+ 	/*
+-	 * Nothing left to arm alarm_work after this returns: the glink
+-	 * client (and its callback/pdr_notify) is torn down by devm after
+-	 * .remove() returns, and rtc_update_irq() below still targets a
+-	 * live devm-managed rtc device.
++	 * As with rtc-pm8xxx, the time may only be set when the DT allows it.
++	 * Without .set_time the NTP sync (RTC_SYSTOHC) leaves the RTC alone.
+ 	 */
+-	cancel_work_sync(&rtc_glink->alarm_work);
++	if (of_property_read_bool(dev->parent->of_node, "allow-set-time"))
++		rtc_glink->rtc->ops = &qcom_rtc_glink_rw_ops;
++	else
++		rtc_glink->rtc->ops = &qcom_rtc_glink_ro_ops;
++
++	rtc_glink->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
++	rtc_glink->rtc->range_max = RTC_TIMESTAMP_END_2099;
++
++	return devm_rtc_register_device(rtc_glink->rtc);
+ }
+ 
+ static const struct auxiliary_device_id qcom_rtc_glink_id_table[] = {
+@@ -682,7 +436,6 @@ static struct auxiliary_driver qcom_rtc_glink_driver = {
+ 	.name = "qcom_pmic_rtc_glink",
+ 	.id_table = qcom_rtc_glink_id_table,
+ 	.probe = qcom_rtc_glink_probe,
+-	.remove = qcom_rtc_glink_remove,
+ };
+ 
+ module_auxiliary_driver(qcom_rtc_glink_driver);
+diff --git a/include/linux/soc/qcom/pmic_glink.h b/include/linux/soc/qcom/pmic_glink.h
+index 11031b0..99daf56 100644
+--- a/include/linux/soc/qcom/pmic_glink.h
++++ b/include/linux/soc/qcom/pmic_glink.h
+@@ -12,6 +12,7 @@ struct pmic_glink_client;
+ #define PMIC_GLINK_OWNER_USBC		32779
+ #define PMIC_GLINK_OWNER_USBC_PAN	32780
+ #define PMIC_GLINK_OWNER_RTC		32784
++#define PMIC_GLINK_OWNER_GIO		32785
+ 
+ #define PMIC_GLINK_REQ_RESP		1
+ #define PMIC_GLINK_NOTIFY		2
+-- 
+2.54.0
+

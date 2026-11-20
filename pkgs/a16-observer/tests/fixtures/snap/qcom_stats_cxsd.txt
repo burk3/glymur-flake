@@ -1,0 +1,4 @@
+Count: 4
+Last Entered At: 68791306082
+Last Exited At: 69196252592
+Accumulated Duration: 1576818762

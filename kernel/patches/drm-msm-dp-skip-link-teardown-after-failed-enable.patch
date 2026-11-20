@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Subject: [PATCH] NOT-FOR-UPSTREAM: drm/msm/dp: don't tear the link down again after a failed enable
+
+Commit 1bda647ce61b ("drm/msm/dp: move link-level teardown from
+display_disable to display_unprepare") moved off_link and the PHY exit
+from msm_dp_display_disable() into msm_dp_display_unprepare() and says
+SST behaviour is unchanged. It is not for a failed .atomic_enable():
+msm_dp_display_disable() returned early on !power_on, so after link
+training gave up, .atomic_post_disable() only dropped the runtime PM
+reference. Now msm_dp_display_unprepare() runs msm_dp_ctrl_off_link()
+unconditionally, on a mainlink that msm_dp_ctrl_on_link()'s failure path
+(deinitialize_mainlink) already took down: link clocks off, PHY powered
+off and re-initialised. off_link then reads and writes MAINLINK_CTRL
+with the link clocks off.
+
+On the ASUS Zenbook A16 (glymur) eDP training gave up after all
+attempts, and the next CRTC disable (an fbdev blank) reset the SoC
+silently within 0.3 s. Restore the old behaviour: skip the link
+teardown when power_on is false.
+
+Fixes: 1bda647ce61b ("drm/msm/dp: move link-level teardown from display_disable to display_unprepare")
+Assisted-by: LLM
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+--- a/drivers/gpu/drm/msm/dp/dp_display.c
++++ b/drivers/gpu/drm/msm/dp/dp_display.c
+@@ -1685,6 +1685,17 @@
+ {
+ 	struct msm_dp *msm_dp_display = &dp->msm_dp_display;
+ 
++	/*
++	 * A failed .atomic_enable() (link training gave up) leaves power_on
++	 * false, and on_link's failure path has already taken the mainlink
++	 * down: its clocks off, the PHY powered off. Tearing the link down
++	 * again touches the link registers with their clocks off, which on
++	 * glymur ends in a silent SoC reset. Before the link teardown moved
++	 * here, msm_dp_display_disable() skipped it on !power_on; keep that.
++	 */
++	if (!msm_dp_display->power_on)
++		goto out;
++
+ 	/* dongle is still connected but sinks are disconnected */
+ 	if (dp->link->sink_count == 0)
+ 		msm_dp_link_psm_config(dp->link, &dp->panel->link_info, true);
+@@ -1699,6 +1710,7 @@
+ 
+ 	msm_dp_display->power_on = false;
+ 
++out:
+ 	pm_runtime_put_sync(&msm_dp_display->pdev->dev);
+ 
+ 	drm_dbg_dp(dp->drm_dev, "type=%d Done\n", msm_dp_display->connector_type);

@@ -1,0 +1,6 @@
+{
+  "subjectPrefix": "NOT-FOR-UPSTREAM: ",
+  "trailer": "Not-for-upstream: ",
+  "forbiddenSignoffs": ["Burke Cates"],
+  "signoffAllowed": []
+}

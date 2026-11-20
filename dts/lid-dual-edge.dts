@@ -1,0 +1,20 @@
+// Keep the lid switch's wake IRQ dual-edge through s2idle. The A16 DT has
+// wakeup-event-action =
+// <EV_ACT_DEASSERTED>, so gpio-keys switched TLMM gpio92 / PDC pin 182
+// to a single edge at suspend entry; with CX collapse reached, that IRQ
+// then fired within ~15 s with no lid change.
+//
+// An overlay cannot delete a property (libfdt's fdt_overlay_apply only
+// adds and overwrites), but gpio-keys treats EV_ACT_ANY (0) exactly as an
+// absent property: no wakeup_trigger_type, so the trigger type is left
+// alone at suspend and resume.
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "asus,zenbook-a16-ux3607oa";
+};
+
+&{/gpio-keys/switch-lid} {
+	wakeup-event-action = <0>; /* EV_ACT_ANY */
+};

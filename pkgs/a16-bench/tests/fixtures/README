@@ -1,0 +1,3 @@
+Tool output recorded on the observer host (x86_64, 2026-10-25) with the nixpkgs pin's
+tools, short durations. Only the format matters to the tests; the numbers
+are not A16 numbers. The sysfs trees in tests/test_sysfs.py are synthetic.

@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 4 Nov 2026 18:56:23 -0800
+Subject: [PATCH 26/27] NOT-FOR-UPSTREAM: ASoC: qcom: sdw: deprepare the SoundWire stream across
+ system suspend
+
+qcom_snd_sdw_trigger() disables the stream on SUSPEND and on RESUME
+calls sdw_prepare_stream() on the DISABLED stream, which re-programs the
+ports but, by design, skips the bus parameter computation. That is
+enough for the WSA884x speakers on their own buses, but not for the
+WCD9378 headphone stream on the Glymur multi-master bus (swr2 with swr1's
+lanes, per-port BPS computed in qcom_swrm_compute_params()): after one
+s2idle cycle with the headphone PCM held open, the codec's PDE 47 no
+longer reaches PS0, neither on resume nor on any later stream start:
+
+  snd_soc_sdca_class_function snd_soc_sdca.SimpleJack.0: PDE 47: pde transition 3 -> 0 failed: -110
+
+and the codec reports a Function_Fault each time. The headphones stay
+silent until reboot; a function reset does not recover them.
+
+Deprepare the stream after disabling it, and prepare it on RESUME as a
+new stream, with the bus parameters computed again. hw_free leaves a
+deprepared stream alone.
+
+On the ASUS Zenbook A16, with this and the stream restarted before DAPM
+resumes the codec, the headphones play after every resume: 7 of 7
+held-stream s2idle cycles, 28 of 28 tone bursts after them verified on a
+line-in capture; without it, 0 of 6 cycles.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ sound/soc/qcom/sdw.c | 35 ++++++++++++++++++++++++-----------
+ 1 file changed, 24 insertions(+), 11 deletions(-)
+
+diff --git a/sound/soc/qcom/sdw.c b/sound/soc/qcom/sdw.c
+index 578d29777626..e7c325f92b54 100644
+--- a/sound/soc/qcom/sdw.c
++++ b/sound/soc/qcom/sdw.c
+@@ -128,7 +128,8 @@ static int qcom_snd_sdw_restart(struct sdw_stream_runtime *sruntime)
+ {
+ 	int ret;
+ 
+-	if (sruntime->state == SDW_STREAM_DISABLED) {
++	if (sruntime->state == SDW_STREAM_DEPREPARED ||
++	    sruntime->state == SDW_STREAM_DISABLED) {
+ 		/* Re-applies the port setup; the bus may have been reset. */
+ 		ret = sdw_prepare_stream(sruntime);
+ 		if (ret)
+@@ -153,10 +154,13 @@ static int qcom_snd_sdw_restart(struct sdw_stream_runtime *sruntime)
+  * otherwise stays enabled while the PCM is suspended: the controller enters
+  * and leaves clock stop with its data ports enabled, and the ports carry
+  * whatever the macro sends the moment the bus clock restarts, before the
+- * bus has been checked. Disable the stream on SUSPEND and program and enable
+- * it again on RESUME. The trigger order (link first on RESUME, last on
+- * SUSPEND, codec unmute after the DAI triggers) keeps the ports enabled
+- * whenever an amplifier is unmuted.
++ * bus has been checked. Disable and deprepare the stream on SUSPEND, and
++ * prepare and enable it again on RESUME, as a new stream would be: a
++ * stream only disabled and re-prepared (sdw_prepare_stream() on a DISABLED
++ * stream skips the bus parameter computation) does not come back on every
++ * bus. The trigger order (link first on RESUME, last on SUSPEND, codec
++ * unmute after the DAI triggers) keeps the ports enabled whenever an
++ * amplifier is unmuted.
+  *
+  * Return: 0 or errno
+  */
+@@ -175,10 +179,18 @@ int qcom_snd_sdw_trigger(struct snd_pcm_substream *substream, int cmd,
+ 		return 0;
+ 
+ 	switch (cmd) {
+-	case SNDRV_PCM_TRIGGER_SUSPEND:
+-		if (sruntime->state == SDW_STREAM_ENABLED)
+-			return sdw_disable_stream(sruntime);
++	case SNDRV_PCM_TRIGGER_SUSPEND: {
++		int ret;
++
++		if (sruntime->state == SDW_STREAM_ENABLED) {
++			ret = sdw_disable_stream(sruntime);
++			if (ret)
++				return ret;
++		}
++		if (sruntime->state == SDW_STREAM_DISABLED)
++			return sdw_deprepare_stream(sruntime);
+ 		break;
++	}
+ 	case SNDRV_PCM_TRIGGER_RESUME:
+ 		return qcom_snd_sdw_restart(sruntime);
+ 	default:
+@@ -206,7 +218,7 @@ int qcom_snd_sdw_prepare(struct snd_pcm_substream *substream,
+ 		return 0;
+ 
+ 	/*
+-	 * Already prepared, but left DISABLED by a system suspend whose
++	 * Already prepared, but left deprepared by a system suspend whose
+ 	 * RESUME trigger failed or never came (user space prepares
+ 	 * instead): program and enable the ports again.
+ 	 */
+@@ -275,10 +287,11 @@ int qcom_snd_sdw_hw_free(struct snd_pcm_substream *substream, bool *stream_prepa
+ 
+ 	sruntime = qcom_snd_sdw_get_stream(substream);
+ 	if (sruntime && *stream_prepared) {
+-		/* A stream disabled for system suspend is only deprepared. */
++		/* A stream deprepared for system suspend needs nothing more. */
+ 		if (sruntime->state == SDW_STREAM_ENABLED)
+ 			sdw_disable_stream(sruntime);
+-		sdw_deprepare_stream(sruntime);
++		if (sruntime->state != SDW_STREAM_DEPREPARED)
++			sdw_deprepare_stream(sruntime);
+ 		*stream_prepared = false;
+ 	}
+ 

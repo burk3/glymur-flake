@@ -1,0 +1,46 @@
+From 3d59e6ae97a95a6c267894a47dd6b15f438f4e19 Mon Sep 17 00:00:00 2001
+From: Burke Cates <burke.cates@gmail.com>
+Date: Wed, 28 Oct 2026 02:13:33 -0700
+Subject: [PATCH 04/11] NOT-FOR-UPSTREAM: soundwire: qcom: recover the bus when auto enumeration
+ fails
+
+Bit 11 of the interrupt status, AUTO_ENUM_FAILED, fell through to the
+"unknown interrupt" default. On the ASUS Zenbook A16 it was raised on
+an s2idle resume, after which both WSA8845 on that bus stayed
+UNATTACHED until a later bus clash happened to run the deferred
+recovery (about a minute and two suspend cycles later).
+
+Schedule the same recovery as for a bus clash.
+
+Assisted-by: Claude Code (claude-opus-5-5)
+---
+Not-for-upstream: local workaround for one laptop, not reviewed for
+  submission; use only for local testing.
+
+ drivers/soundwire/qcom.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 5551c0bf28ea..ee5d39f3959a 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -974,6 +974,19 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
+ 			case SWRM_INTERRUPT_STATUS_SPECIAL_CMD_ID_FINISHED:
+ 				complete(&ctrl->broadcast);
+ 				break;
++			case SWRM_INTERRUPT_STATUS_AUTO_ENUM_FAILED:
++				/*
++				 * Peripherals that failed hardware enumeration
++				 * stay unattached until something resets the
++				 * bus; let the clash recovery do that.
++				 */
++				dev_err_ratelimited(ctrl->dev,
++					"%s: SWR auto enumeration failed\n",
++					__func__);
++				atomic_inc(&ctrl->recovery_pending);
++				if (READ_ONCE(ctrl->recovery_ready))
++					schedule_work(&ctrl->recovery_work);
++				break;
+ 			case SWRM_INTERRUPT_STATUS_BUS_RESET_FINISHED_V2:
+ 				break;
+ 			case SWRM_INTERRUPT_STATUS_CLK_STOP_FINISHED_V2:
