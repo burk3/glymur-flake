@@ -13,6 +13,7 @@
     ./audio
     ./wifi-sleep.nix
     ./edp-retrain.nix
+    ./camera.nix
     ./ir-emitter.nix
     ./howdy.nix
     ./tpm.nix

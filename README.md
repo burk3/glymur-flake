@@ -38,6 +38,7 @@ Options live under `hardware.asus-zenbook-a16`:
 | `audio.*` | on | speakers |
 | `wifi.unloadAcrossSuspend` | true | ath12k resume workaround |
 | `edpRetrain.enable` | true | eDP link-training recovery |
+| `camera.tools.enable` | off | `cam`, `qcam`, v4l-utils (the webcam itself needs no option) |
 | `irEmitter.stage`, `howdy.*` | off | IR camera face login |
 | `usbWakeup.disabledControllers` | all three | USB wakeup off for s2idle |
 | `inference.*` | off | llama-server on the CDSP (Hexagon NPU): web UI, OpenAI API, your model presets |
