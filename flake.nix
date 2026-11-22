@@ -123,6 +123,7 @@
         # kernel checkout (LAB_LEASE_RESOURCES or leaseResources names them).
         lab-lease = nixpkgs.legacyPackages.${system}.callPackage ./pkgs/lab-lease { };
         a16 = self.packages.${system}.a16-observer;
+        a16-panel = nixpkgs.legacyPackages.${system}.callPackage ./pkgs/a16-panel { };
       })) {
       aarch64-linux = {
         kernel = example.config.boot.kernelPackages.kernel;

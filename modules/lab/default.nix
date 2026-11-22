@@ -1,4 +1,9 @@
-{ config, lib, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   sc = config.lab.zenbook.serialConsole;
@@ -24,6 +29,10 @@ in
     USB_SERIAL_CONSOLE = "y";
     USB_SERIAL_FTDI_SIO = "y";
   };
+
+  # `a16-panel off|on`: the panel off through the session's compositor for
+  # tests that don't need the screen.
+  environment.systemPackages = [ (pkgs.callPackage ../../pkgs/a16-panel { }) ];
 
   hardware.asus-zenbook-a16.usbWakeup.disabledControllers = lib.mkIf (sc.enable && sc.wakeup) [
     "a400000"
