@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  options,
   pkgs,
   zenbook-a16-linux,
   ...
@@ -227,6 +228,14 @@ in
     (lib.mkIf cfg.enable {
       boot.kernelPackages = cfg.packages;
       hardware.asus-zenbook-a16.firmware.dsp.extraInitrdModules = series.initrdModules;
+    })
+    # With kernel.pkgs pinned, the kernel and its external modules
+    # (boot.kernelPackages.*) come from that package set, so combine them
+    # (system.modulesTree) with its aggregateModules too. A newer system
+    # nixpkgs (2026-11, kmodigest signing) expects modules.cer and a .ko.cer
+    # per external module, which an older package set's builds don't have.
+    (lib.mkIf (cfg.enable && options.hardware.asus-zenbook-a16.kernel.pkgs.highestPrio < 1500) {
+      nixpkgs.overlays = [ (_: _: { inherit (kpkgs) aggregateModules; }) ];
     })
   ];
 }
