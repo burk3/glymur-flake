@@ -42,7 +42,13 @@ python3Packages.buildPythonApplication {
     export A16_OBS_JOURNAL_STDOUT=1
   '';
 
-  makeWrapperArgs = [ "--suffix PATH : ${lib.makeBinPath [ openssh ]}" ];
+  # One list element per argument (structured attrs don't word-split).
+  makeWrapperArgs = [
+    "--suffix"
+    "PATH"
+    ":"
+    (lib.makeBinPath [ openssh ])
+  ];
 
   # a16-snap runs its tools by name; pin the ones the A16's system may lack.
   postFixup = ''

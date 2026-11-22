@@ -48,10 +48,20 @@ python3Packages.buildPythonApplication {
   dependencies = [ python3Packages.pyyaml ];
   nativeCheckInputs = [ python3Packages.pytestCheckHook ];
 
+  # One list element per argument: with structured attrs (nixpkgs since
+  # 2026-11) an element is no longer word-split.
   makeWrapperArgs = [
-    "--prefix PATH : ${lib.makeBinPath ((lib.attrValues tools) ++ [ util-linux ])}"
-    "--suffix PATH : /run/current-system/sw/bin"
-    "--set A16_BENCH_TOOL_VERSIONS ${toolVersions}"
+    "--prefix"
+    "PATH"
+    ":"
+    (lib.makeBinPath ((lib.attrValues tools) ++ [ util-linux ]))
+    "--suffix"
+    "PATH"
+    ":"
+    "/run/current-system/sw/bin"
+    "--set"
+    "A16_BENCH_TOOL_VERSIONS"
+    "${toolVersions}"
   ];
 
   meta = {

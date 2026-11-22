@@ -21,12 +21,13 @@ python3Packages.buildPythonApplication {
   nativeCheckInputs = [ python3Packages.pytestCheckHook ];
 
   makeWrapperArgs = [
-    "--prefix PATH : ${
-      lib.makeBinPath [
-        (v4l-utils.override { withGUI = false; })
-        kmod
-      ]
-    }"
+    "--prefix"
+    "PATH"
+    ":"
+    (lib.makeBinPath [
+      (v4l-utils.override { withGUI = false; })
+      kmod
+    ])
   ];
 
   meta = {
