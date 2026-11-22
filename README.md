@@ -67,7 +67,8 @@ the approach:
   watchdog, systemd-boot boot counting with a delayed blessing so a bad
   generation falls back on its own, telemetry and log shipping, diagnostic
   snapshots (`a16-snap`), milestone benchmarks, `a16-panel off|on` (the
-  panel off through the session's niri, Hyprland or KWin).
+  panel off through the session's niri, Hyprland or KWin). `packages.aarch64-linux.furmark`:
+  FurMark with its arm64 build fixed (unfree, allowed for it alone).
 - `nixosModules.observer-host`: the other end, on a workstation. A
   container that owns the serial cable, receives heartbeats and netconsole,
   scrapes metrics, and the `a16` CLI (status, logs, boots, red-flag kernel

@@ -25,6 +25,11 @@
         "aarch64-linux"
       ];
       aarch64 = nixpkgs.legacyPackages.aarch64-linux;
+      # The one unfree package this flake builds itself (packages.furmark).
+      aarch64Furmark = import nixpkgs {
+        system = "aarch64-linux";
+        config.allowUnfreePredicate = pkg: lib.getName pkg == "furmark";
+      };
 
       patchPolicy = import ./kernel/check.nix { inherit lib; };
 
@@ -131,6 +136,9 @@
         hexagon-dsp-libs = aarch64.callPackage ./pkgs/hexagon-dsp-libs { };
         a16-ir-bridge = aarch64.callPackage ./pkgs/a16-ir-bridge { };
         llama-cpp-hexagon = aarch64.callPackage ./pkgs/llama-cpp-hexagon { };
+        # GPU stress test with its arm64 unpack fixed; unfree, allowed for
+        # this package only.
+        furmark = aarch64Furmark.callPackage ./pkgs/furmark { };
       };
 
       # Architecture-independent: the queue as files (default variant).
