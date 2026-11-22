@@ -160,3 +160,7 @@ fw-bug	arm-smmu 15000000.iommu: [Firmware Bug]: unexpected SMR configuration
 # real: rnf, gen 90 boot baa7b615, 2026-11-04 02:57 PST (s2idle with an HP stream held)
 sdca-pde-timeout	snd_soc_sdca_class_function snd_soc_sdca.SimpleJack.0: PDE 47: pde transition 3 -> 0 failed: -110
 sdca-pde-timeout	snd-x1e80100 sound: ASoC: POST_PMU: PDE 47 event failed: -110
+tpm-failure-mode	tpm tpm0: A TPM error (257) occurred attempting the self test
+tpm-failure-mode	faux_driver tpm_qsee_lab: poll 0: ret 28 rc 0x0 testResult 0x101, 3373540 us
+# real: qr4.14, gen 118 boot 3327a11b, 2026-11-20 22:57 PST (NV SetVariable, OOB QUP clocks gated)
+uefisecapp-error	qcom_qseecom_uefisecapp qcom_qseecom.uefisecapp.0: qsee_uefi_set_variable: uefisecapp error: 0x80000007

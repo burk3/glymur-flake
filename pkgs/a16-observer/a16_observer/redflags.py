@@ -188,6 +188,12 @@ PATTERNS: list[Pattern] = [
     P("deferred-probe", "warn", "boot", r"deferred probe pending", None),
     P("i2c-gpi-error", "warn", "bus", r"GPI transfer failed|DMA txn failed|gpi \S+: Error in Transaction", None),
     P("camss-error", "warn", "camera", r"qcom-camss \S+: .*(unmapped index|fail|error)", "rrj"),
+    P("tpm-failure-mode", "warn", "security",
+      r"tpm tpm\d+: A TPM error \(257\) occurred|tpm_qsee_lab: poll \d+: .*testResult 0x101",
+      "nkb", "fTPM in failure mode (TPM_RC_FAILURE) until reset; seen when the OOB QUP clocks were off"),
+    P("uefisecapp-error", "warn", "firmware",
+      r"qcom_qseecom_uefisecapp \S+: \w+: uefisecapp error: 0x[0-9a-f]+",
+      "qr4.14", "EFI variable service failed in TrustZone; 0x80000007 on every NV write when the OOB QUP clocks were off"),
 ]
 del P
 
