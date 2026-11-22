@@ -217,6 +217,25 @@ in
       };
     };
 
+    # A howdy login starts the user's WirePlumber while the bridge still
+    # streams (it stops ~2 s after howdy closes the node). WirePlumber's
+    # libcamera monitor enumerates the cameras once, at start: the simple
+    # pipeline's setupLinks() then cannot switch csid0 away from the busy IR
+    # route ("Failed to setup link 'msm_csiphy0'[1] -> 'msm_csid0'[0]: Device
+    # or resource busy"), drops both cameras, and never retries, so the
+    # session has no PipeWire camera (bead snapx2ee-bringup-dm8). Hold
+    # WirePlumber's start until the bridge has restored the RGB route, at
+    # most 20 s; it starts anyway after that.
+    systemd.user.services.wireplumber.serviceConfig.ExecStartPre = lib.mkIf config.services.pipewire.wireplumber.enable [
+      "-${pkgs.writeShellScript "wait-a16-ir-bridge" ''
+        for ((i = 0; i < 100; i++)); do
+          ${config.systemd.package}/bin/systemctl is-active --quiet a16-ir-bridge.service || exit 0
+          ${pkgs.coreutils}/bin/sleep 0.2
+        done
+        echo "a16-ir-bridge still active after 20 s; starting anyway" >&2
+      ''}"
+    ];
+
     environment.systemPackages = [
       bridge
       pkgs.pamtester
