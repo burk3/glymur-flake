@@ -133,5 +133,18 @@ in
         exit 1
       '';
     };
+
+    # The fbdev blank/unblank only retrains while no compositor is DRM
+    # master, so a greeter that runs one (SDDM's kwin_wayland or weston,
+    # GDM's gnome-shell) waits for it: ~14 s on a normal boot, at most
+    # `timeout` if eDP never comes up. Text greeters (greetd with tuigreet,
+    # getty) run on fbcon and need no ordering; a session started from them
+    # within those seconds can still preempt the retrain.
+    systemd.services.display-manager =
+      lib.mkIf (config.services.displayManager.sddm.enable || config.services.displayManager.gdm.enable)
+        {
+          after = [ "lab-edp-retrain.service" ];
+          wants = [ "lab-edp-retrain.service" ];
+        };
   };
 }
