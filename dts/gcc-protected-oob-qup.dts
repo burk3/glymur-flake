@@ -1,0 +1,32 @@
+// Keep TrustZone's two OOB QUP clocks out of Linux's hands, so the fTPM
+// (QSEE app qcom.tz.tpm, modules/tpm.nix) stays healthy. The firmware
+// leaves GCC_QUPV3_OOB_M_AHB_CLK and GCC_QUPV3_OOB_S0_CLK running; nothing
+// in the A16 DT uses them (TLMM
+// gpio 10-11, the "OOB UART", is a reserved range), so clk_disable_unused
+// gated both, and the first TPM command then stalled 3.37 s and left the
+// fTPM in failure mode (testResult 0x101) until reset: 5 of 5 boots.
+// Keeping just these two on, or clk_ignore_unused, was healthy every
+// boot.
+//
+// protected-clocks makes the qcom clock driver skip registering them
+// (qcom_cc_drop_protected), so Linux neither gates nor reports them; no
+// rate or voltage changes, and unlike clk_ignore_unused every other
+// unused clock is still gated.
+//
+// The indices come from the booted kernel's own bindings header
+// (nixpkgs preprocesses overlays with its include-prefixes): in v7.4-rc3
+// GCC_QUPV3_OOB_M_AHB_CLK is 182 and GCC_QUPV3_OOB_S0_CLK 187. The base
+// DT has no protected-clocks on gcc for this to overwrite.
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/clock/qcom,glymur-gcc.h>
+
+/ {
+	compatible = "asus,zenbook-a16-ux3607oa";
+};
+
+&{/soc@0/clock-controller@100000} {
+	protected-clocks = <GCC_QUPV3_OOB_M_AHB_CLK>,
+			   <GCC_QUPV3_OOB_S0_CLK>;
+};

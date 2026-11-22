@@ -81,6 +81,10 @@ in
             name = "lid-dual-edge";
             dtsFile = ../dts/lid-dual-edge.dts;
           }
+          {
+            name = "gcc-protected-oob-qup";
+            dtsFile = ../dts/gcc-protected-oob-qup.dts;
+          }
         ];
       };
       boot.loader.systemd-boot.installDeviceTree = true;
