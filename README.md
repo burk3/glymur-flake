@@ -40,6 +40,7 @@ Options live under `hardware.asus-zenbook-a16`:
 | `edpRetrain.enable` | true | eDP link-training recovery |
 | `irEmitter.stage`, `howdy.*` | off | IR camera face login |
 | `usbWakeup.disabledControllers` | all three | USB wakeup off for s2idle |
+| `inference.*` | off | llama-server on the CDSP (Hexagon NPU): web UI, OpenAI API, your model presets |
 | `tpm.enable` | true | the firmware TPM (`/dev/tpm0`, `/dev/tpmrm0`) over QSEECOM; systemd's TPM2 units stay off unless you enable them |
 
 ## Firmware

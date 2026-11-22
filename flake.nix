@@ -129,6 +129,7 @@
         hexagon-fastrpc = aarch64.callPackage ./pkgs/hexagon-fastrpc { };
         hexagon-dsp-libs = aarch64.callPackage ./pkgs/hexagon-dsp-libs { };
         a16-ir-bridge = aarch64.callPackage ./pkgs/a16-ir-bridge { };
+        llama-cpp-hexagon = aarch64.callPackage ./pkgs/llama-cpp-hexagon { };
       };
 
       # Architecture-independent: the queue as files (default variant).
@@ -137,7 +138,8 @@
 
       nixosConfigurations.example = example;
 
-      # Evaluation only: instantiates the example system (no kernel build).
+      # Evaluation only: instantiates the example system (no kernel build);
+      # on x86_64-linux also the model server's VM test.
       checks = forAllSystems (system: {
         # kernel/check.nix: manifest complete, NOT-FOR-UPSTREAM marks, no
         # sign-off added on someone's behalf.
@@ -149,6 +151,10 @@
         example-eval = nixpkgs.legacyPackages.${system}.writeText "example-toplevel" (
           builtins.unsafeDiscardStringContext example.config.system.build.toplevel.drvPath
         );
+      } // lib.optionalAttrs (system == "x86_64-linux") {
+        # The router, sandbox and OpenAI API with nixpkgs' CPU llama-cpp and
+        # a tiny model (no NPU, no large download).
+        inference = nixpkgs.legacyPackages.${system}.callPackage ./tests/inference.nix { };
       });
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
