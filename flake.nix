@@ -85,9 +85,6 @@
         modules = [
           self.nixosModules.default
           {
-            # The firmware extract is a requireFile; examples and
-            # checks evaluate without it.
-            hardware.asus-zenbook-a16.firmware.extract.enable = lib.mkDefault false;
             boot.loader.systemd-boot.enable = true;
             fileSystems."/" = {
               device = "/dev/disk/by-label/nixos";

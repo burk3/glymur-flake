@@ -17,8 +17,8 @@ let
       null;
 
   fw = pkgs.callPackage ../pkgs/a16-firmware {
-    inherit (cfg) extract wifiBoardImage;
-    inherit (cfg.bluetooth) bsp;
+    inherit (cfg) wifiBoardImage;
+    bsp = { inherit (cfg.bsp) name url sha256; };
     inherit speakerDsp;
   };
 
@@ -186,29 +186,34 @@ let
 in
 {
   options.hardware.asus-zenbook-a16.firmware = {
-    enable = lib.mkEnableOption "the A16's firmware (linux-firmware subset, Windows extract, regulatory.db)";
+    enable = lib.mkEnableOption "the A16's firmware (linux-firmware subset, ASUS BSP firmware, regulatory.db)";
 
-    extract = {
+    bsp = {
       enable = mkOption {
         type = types.bool;
         default = true;
         description = ''
-          Use the Windows firmware extract (ADSP/CDSP images, Wi-Fi board
-          data). It must be in the Nix store (see pkgs/a16-firmware: the
-          requireFile message says how). Without it only linux-firmware's
-          files are installed: no audio/battery DSPs, and ath12k finds no
-          board data for this board.
+          Install the OEM firmware from ASUS's Qualcomm BSP package for the
+          UX3607OA (fetched from ASUS's CDN): the ADSP/CDSP images and the
+          Wi-Fi board data. Without it only linux-firmware's files are
+          installed: no audio/battery DSPs, and ath12k finds no board data
+          for this board. (The Bluetooth files: bluetooth.enable.)
         '';
       };
       name = mkOption {
         type = types.str;
-        default = "a16-firmware-20261022-140341.zip";
-        description = "File name of the extract zip (as made by firmware/extract-windows-a16.ps1).";
+        default = "SOCPackage_forWebSite_Qualcomm_Z_V1.312.4500.0_50616.exe";
+        description = "File name of ASUS's Qualcomm BSP package (as downloaded).";
+      };
+      url = mkOption {
+        type = types.str;
+        default = "https://dlcdnets.asus.com/pub/ASUS/nb/Image/Driver/DriverPackage/50616/SOCPackage_forWebSite_Qualcomm_Z_V1.312.4500.0_50616.exe?model=UX3607OA";
+        description = "Download URL of the BSP package (ASUS's UX3607OA support page link).";
       };
       sha256 = mkOption {
         type = types.str;
-        default = "ca1597bb652232a458e0e1ead0a1318063a44a9b260c9ed25384833ecb90ba6c";
-        description = "sha256 of the extract zip (hex).";
+        default = "e8f2389ac5d4dfd30a1a8481ec3c1e282f24baea2898414351d0b6eb1fa8a0b3";
+        description = "sha256 of the BSP package (hex).";
       };
     };
 
@@ -219,36 +224,19 @@ in
         description = ''
           Install the Bluetooth patch and NVM the series kernel requests for
           the "Cologne 1.0" controller (qca/clnbtfw10.tlv, qca/clnbtnv10.*),
-          extracted from ASUS's Qualcomm BSP .exe (fetched from ASUS's CDN).
+          extracted from ASUS's Qualcomm BSP .exe (bsp.*).
           Without it BT runs from ROM.
         '';
-      };
-      bsp = {
-        name = mkOption {
-          type = types.str;
-          default = "SOCPackage_forWebSite_Qualcomm_Z_V1.312.4500.0_50616.exe";
-          description = "File name of ASUS's Qualcomm BSP package (as downloaded).";
-        };
-        url = mkOption {
-          type = types.str;
-          default = "https://dlcdnets.asus.com/pub/ASUS/nb/Image/Driver/DriverPackage/50616/SOCPackage_forWebSite_Qualcomm_Z_V1.312.4500.0_50616.exe?model=UX3607OA";
-          description = "Download URL of the BSP package (ASUS's UX3607OA support page link).";
-        };
-        sha256 = mkOption {
-          type = types.str;
-          default = "e8f2389ac5d4dfd30a1a8481ec3c1e282f24baea2898414351d0b6eb1fa8a0b3";
-          description = "sha256 of the BSP package (hex).";
-        };
       };
     };
 
     wifiBoardImage = mkOption {
       type = types.str;
-      default = "qcwlancol8480.inf_arm64_d440e12aca6ddc77/bdwlan_qcc2072_1p0_ncm820A.elf";
+      default = "QualcommBSP/WIFI_BT/qcwlancol8480/bdwlan_qcc2072_1p0_ncm820A.elf";
       description = ''
-        Windows WLAN board image (relative to the extract's
-        windows-packages/wlan) put into board-2.bin under this board's key.
-        The default reproduces jc372/A16Build's verified board-2.bin.
+        WLAN board image (a path inside the BSP package) put into
+        board-2.bin under this board's key. The default reproduces
+        jc372/A16Build's verified board-2.bin.
       '';
     };
 
@@ -265,8 +253,8 @@ in
           "stage2"
           "off"
         ];
-        default = if cfg.extract.enable then "initrd" else "off";
-        defaultText = lib.literalExpression ''if extract.enable then "initrd" else "off"'';
+        default = if cfg.bsp.enable then "initrd" else "off";
+        defaultText = lib.literalExpression ''if bsp.enable then "initrd" else "off"'';
         description = ''
           When the ADSP/CDSP start (qcom_q6v5_pas loads).
           - initrd: explicitly, in the initrd before the root device is used,
@@ -321,21 +309,21 @@ in
       {
         assertions = [
           {
-            assertion = cfg.dsp.mode == "off" || cfg.extract.enable;
-            message = "hardware.asus-zenbook-a16.firmware.dsp.mode = \"${cfg.dsp.mode}\" needs the Windows extract (extract.enable).";
+            assertion = cfg.dsp.mode == "off" || cfg.bsp.enable;
+            message = "hardware.asus-zenbook-a16.firmware.dsp.mode = \"${cfg.dsp.mode}\" needs the BSP firmware (bsp.enable).";
           }
         ];
 
         hardware.asus-zenbook-a16.firmware.packages = {
-          inherit (fw) linuxFirmwareSubset zip;
+          inherit (fw) linuxFirmwareSubset bspExe;
         }
-        // lib.optionalAttrs cfg.extract.enable { inherit (fw) windows board2; }
+        // lib.optionalAttrs cfg.bsp.enable { inherit (fw) dsp board2; }
         // lib.optionalAttrs cfg.bluetooth.enable { inherit (fw) bluetooth; };
 
         hardware.firmware =
-          lib.optionals cfg.extract.enable [
+          lib.optionals cfg.bsp.enable [
             fw.board2
-            fw.windows
+            fw.dsp
           ]
           ++ lib.optional cfg.bluetooth.enable fw.bluetooth
           ++ [ fw.linuxFirmwareSubset ]

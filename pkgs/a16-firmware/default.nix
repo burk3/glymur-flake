@@ -8,14 +8,8 @@
   jq,
   linux-firmware,
   python3,
-  requireFile,
   runCommand,
-  unzip,
-  extract ? {
-    name = "a16-firmware-20261022-140341.zip";
-    sha256 = "ca1597bb652232a458e0e1ead0a1318063a44a9b260c9ed25384833ecb90ba6c";
-  },
-  wifiBoardImage ? "qcwlancol8480.inf_arm64_d440e12aca6ddc77/bdwlan_qcc2072_1p0_ncm820A.elf",
+  wifiBoardImage ? "QualcommBSP/WIFI_BT/qcwlancol8480/bdwlan_qcc2072_1p0_ncm820A.elf",
   bsp ? {
     name = "SOCPackage_forWebSite_Qualcomm_Z_V1.312.4500.0_50616.exe";
     url = "https://dlcdnets.asus.com/pub/ASUS/nb/Image/Driver/DriverPackage/50616/SOCPackage_forWebSite_Qualcomm_Z_V1.312.4500.0_50616.exe?model=UX3607OA";
@@ -26,24 +20,6 @@
 
 let
   inherit (lib) escapeShellArg;
-
-  zip = requireFile {
-    inherit (extract) name sha256;
-    meta.license = lib.licenses.unfreeRedistributableFirmware;
-    message = ''
-      The A16 firmware extract ${extract.name} is not in the Nix store.
-      It is OEM firmware and is never committed to the repository; add your
-      own copy (made by firmware/extract-windows-a16.ps1 on the A16's Windows
-      install) to the local store:
-
-        nix-store --add-fixed sha256 /path/to/${extract.name}
-      or
-        nix store add --mode flat --hash-algo sha256 /path/to/${extract.name}
-
-      Remote builders get it from the local store as a build input. A newer
-      extract: set hardware.asus-zenbook-a16.firmware.extract.{name,sha256} to match it.
-    '';
-  };
 
   bspExe = fetchurl {
     inherit (bsp) name url sha256;
@@ -62,18 +38,36 @@ let
   };
   btPkgDir = "QualcommBSP/WIFI_BT/qcbluetooth8480";
 
+  adspPkgDir = "QualcommBSP/Subsystem/qcsubsys_ext_adsp8480";
+  cdspPkgDir = "QualcommBSP/NPU/qcnspmcdm8480";
   dspSha256 = {
-    "qcadsp8480.mbn" = "67b4e129d4d60fccd05d85be3754168f46535549a03a3627c598d634e73df49d";
-    "qccdsp8480.mbn" = "acf13d29288d283793f418a36650e8a261eed927d30de109a59cb2210f458794";
-    "adsp_dtbs.elf" = "7906466c734b2f360d48cf086f80b6e04d84e9b02255c74545aa28d5df1e932c";
-    "cdsp_dtbs.elf" = "9bee104a48d4aac647287d6c1454df170c1cff7158a2352711fd1e2163ea6d1d";
+    "${adspPkgDir}/qcadsp8480.mbn" = "67b4e129d4d60fccd05d85be3754168f46535549a03a3627c598d634e73df49d";
+    "${adspPkgDir}/adsp_dtbs.elf" = "7906466c734b2f360d48cf086f80b6e04d84e9b02255c74545aa28d5df1e932c";
+    "${adspPkgDir}/adspr.jsn" = "66ce8531efb7979d234e0f0eabbe18d038ac97da771a8a194f613df8f0724e81";
+    "${adspPkgDir}/adsps.jsn" = "12ac2f3ae8ced12aa4b06b3ab3a01bc4d8efe1c92ebea503c002f209a6ec176f";
+    "${adspPkgDir}/adspua.jsn" = "982a99853495e34726b8e44697fdfad303334de0a67cbf6cde306c8f1731000b";
+    "${cdspPkgDir}/qccdsp8480.mbn" = "acf13d29288d283793f418a36650e8a261eed927d30de109a59cb2210f458794";
+    "${cdspPkgDir}/cdsp_dtbs.elf" = "9bee104a48d4aac647287d6c1454df170c1cff7158a2352711fd1e2163ea6d1d";
   };
+  hmtSha256 = {
+    "hmtbtfw20.tlv" = "7ee3f2b968d0616b67676a67e7c7e9de1e3fd0e4d4f96c5cc364650280563ad5";
+    "hmtnv20.b105" = "57c3cf985ff407606db950574daf639ca9f279bdd37675acccd7ad1d980761ef";
+    "hmtnv20.b107" = "57c3cf985ff407606db950574daf639ca9f279bdd37675acccd7ad1d980761ef";
+    "hmtnv20.b108" = "57c3cf985ff407606db950574daf639ca9f279bdd37675acccd7ad1d980761ef";
+    "hmtnv20.b10f" = "3af0e8c65c3f119a2380820a24af4979d5affc2751a22170ecd9f318e25e77ff";
+    "hmtnv20.b112" = "6cc9e4609bde5cba32460ecd691ed39bcf2de14d6ae59e501c9c9fc637c54b4b";
+    "hmtnv20.b3b" = "f0b2bd0050d1b8d935c9fad533352a9fbccccb47fafbd191d2044a8caacc4b7c";
+    "hmtnv20.bin" = "f0b2bd0050d1b8d935c9fad533352a9fbccccb47fafbd191d2044a8caacc4b7c";
+  };
+  wifiBoardImageSha256 = "eeb1311ec3e4955323f1b62247d4caeaad1f292938e2077dfdc466d6a4d3be86";
 
-  unpack = ''
-    unzip -q ${zip} -d extract || [ $? -eq 1 ]
-    chmod -R u+rwX extract
-    (cd extract && sha256sum --quiet -c SHA256SUMS)
-  '';
+  checkSha256 =
+    hashes:
+    lib.concatStrings (
+      lib.mapAttrsToList (f: h: ''
+        echo "${h}  ${f}" | sha256sum --quiet -c
+      '') hashes
+    );
 
   dspDir = "qcom/glymur/ASUSTeK/UX3607OA";
 
@@ -118,7 +112,7 @@ let
       '';
 in
 {
-  inherit zip bspExe;
+  inherit bspExe;
   speakerDspTopology = if speakerDsp == null then null else a16Topology;
 
   bluetooth =
@@ -137,44 +131,42 @@ in
         install -Dm444 -t $out/lib/firmware/qca ${lib.concatStringsSep " " (lib.attrNames btSha256)}
       '';
 
-  windows =
-    runCommand "a16-firmware-windows"
+  dsp =
+    runCommand "a16-firmware-dsp"
       {
-        nativeBuildInputs = [ unzip ];
+        nativeBuildInputs = [ _7zz ];
         passthru.compressFirmware = false;
       }
       ''
-        ${unpack}
-        cd extract
-        ${lib.concatStrings (
-          lib.mapAttrsToList (f: h: ''
-            echo "${h}  ${dspDir}/${f}" | sha256sum --quiet -c
-          '') dspSha256
-        )}
-        install -Dm444 -t $out/lib/firmware/${dspDir} \
-          ${dspDir}/{qcadsp8480.mbn,qccdsp8480.mbn,adsp_dtbs.elf,cdsp_dtbs.elf,adspr.jsn,adsps.jsn,adspua.jsn}
+        7zz x -y -bso0 -bsp0 -obsp ${bspExe} '${adspPkgDir}/*' '${cdspPkgDir}/*' '${btPkgDir}/hmt*'
+        cd bsp
+        ${checkSha256 dspSha256}
+        install -Dm444 -t $out/lib/firmware/${dspDir} ${lib.concatStringsSep " " (lib.attrNames dspSha256)}
         # Bluetooth patch/NVM for the WCN7850 (hmt) naming. The series kernel
         # identifies this chip as "Cologne 1.0" and asks for qca/clnbtfw10.tlv
-        # instead, which the extract and linux-firmware lack (see bluetooth).
-        install -Dm444 -t $out/lib/firmware/qca qca/hmt*
+        # instead (see bluetooth).
+        cd ${btPkgDir}
+        ${checkSha256 hmtSha256}
+        install -Dm444 -t $out/lib/firmware/qca ${lib.concatStringsSep " " (lib.attrNames hmtSha256)}
       '';
 
   board2 =
     runCommand "a16-qcc2072-board-2"
       {
         nativeBuildInputs = [
-          unzip
+          _7zz
           jq
           python3
         ];
       }
       ''
-        ${unpack}
+        7zz x -y -bso0 -bsp0 -obsp ${bspExe} ${escapeShellArg wifiBoardImage}
+        echo "${wifiBoardImageSha256}  bsp/${wifiBoardImage}" | sha256sum --quiet -c
         mkdir work && cd work
         cp ${lf}/ath12k/QCC2072/hw1.0/board-2.bin board-2.bin
         chmod u+w board-2.bin
         python3 ${bdencoder} -e board-2.bin > /dev/null
-        cp ../extract/windows-packages/wlan/${escapeShellArg wifiBoardImage} a16.bin
+        cp ../bsp/${escapeShellArg wifiBoardImage} a16.bin
 
         # The BIOS reports the A14's variant (UX3407Q; kernel.org bug 221984),
         # so match with and without it. Drop any existing entry for this board.
@@ -199,7 +191,7 @@ in
         # (linux-firmware 20260911/20260916 container + the ncm820A image).
         mkdir -p $out/share/a16-firmware
         {
-          echo "image: ${wifiBoardImage}"
+          echo "image: ${bsp.name}:${wifiBoardImage}"
           echo "container: ${linux-firmware.name}"
           sha256sum board-2.bin
         } > $out/share/a16-firmware/board-2.txt
@@ -215,7 +207,7 @@ in
     copy qcom/glymur/gen80100_zap.mbn
 
     # Wi-Fi: firmware-2.bin (ath12k only falls back to amss.bin/m3.bin
-    # without it). board-2.bin comes from board2 when the extract is used.
+    # without it). board2's board-2.bin (this board's key) takes precedence.
     for f in firmware-2.bin board-2.bin Notice.txt; do copy ath12k/QCC2072/hw1.0/$f; done
 
     # Bluetooth (WCN7850 hmt naming); the cln10 files come from bluetooth.

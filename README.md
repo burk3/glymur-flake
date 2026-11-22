@@ -43,9 +43,12 @@ Options live under `hardware.asus-zenbook-a16`:
 
 ## Firmware
 
-OEM firmware is never stored in this repository. It is fetched from ASUS's
-public support download at build time (fixed hash), or must be added to the
-local Nix store by the user.
+OEM firmware is never stored in this repository. All of it (ADSP/CDSP
+images, the Wi-Fi board image, Bluetooth patches and NVMs) comes from ASUS's
+Qualcomm BSP package for the UX3607OA, fetched from ASUS's public support
+download at build time (fixed hash; every file taken from it is checked
+against its own hash). Keep the firmware outputs out of public binary
+caches: they are ASUS's files.
 
 ## Lab tooling: how this laptop was brought up
 
