@@ -8,6 +8,14 @@ precedence = "override"
 SPDX-FileCopyrightText = "The authors named in each file"
 SPDX-License-Identifier = "GPL-2.0-only"
 
+# The out-of-tree fTPM kernel module: GPL-2.0-only like the kernel (its
+# transport is Xilin Wu's tpm_qcom_qsee.c; see the file's header).
+[[annotations]]
+path = ["pkgs/tpm-qsee-lab/tpm_qsee_lab.c", "pkgs/tpm-qsee-lab/Kbuild"]
+precedence = "override"
+SPDX-FileCopyrightText = "The authors named in the file"
+SPDX-License-Identifier = "GPL-2.0-only"
+
 # Everything else (Nix code, scripts, tools): MIT.
 [[annotations]]
 path = ["**"]

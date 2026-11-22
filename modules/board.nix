@@ -96,10 +96,12 @@ in
       # 1970; rtc-qcom-glink (in the patch queue) is the RTC here.
       boot.blacklistedKernelModules = [ "rtc_pm8xxx" ];
 
-      # The firmware reports a TPM that has no Linux driver yet; don't wait
-      # 90 s for /dev/tpm0.
-      boot.initrd.systemd.tpm2.enable = false;
-      systemd.tpm2.enable = false;
+      # systemd's TPM2 units stay off unless the system turns them on:
+      # without the fTPM driver (tpm.enable) the firmware still reports a
+      # TPM and tpm2.target would wait 90 s for /dev/tpm0; with it, they
+      # are untested across many boots yet. Never wait for the TPM either way.
+      boot.initrd.systemd.tpm2.enable = lib.mkDefault false;
+      systemd.tpm2.enable = lib.mkDefault false;
       boot.kernelParams = [ "systemd.tpm2_wait=0" ];
 
       services.udev.extraRules = lib.mkIf (cfg.usbWakeup.disabledControllers != [ ]) ''
